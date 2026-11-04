@@ -14,7 +14,11 @@ RESERVED_NAMES = {'Jam', 'Beban', 'Beban (MW)', 'Baterai', 'Baterai isi', 'Bater
                   'Diskonto (%)', 'Investasi awal (juta USD)', 'Investasi tahunan (juta USD/tahun)',
                   'Baterai (MW)', 'Baterai (MWh)', 'Parameter baterai', 'Pendekatan', 'Skenario ketidakpastian',
                   'Parameter penyimpanan', 'Penyimpanan per teknologi', 'Penyimpanan (MW)', 'Penyimpanan (MWh)',
-                  'Parameter tidak pasti'}
+                  'Parameter tidak pasti', 'Kapasitas tahun dasar (MW)', 'Kapasitas baru (MW)',
+                  'Daya tahun dasar (MW)', 'Daya baru (MW)', 'Tahun dasar', 'Tahun akhir',
+                  'Periode perencanaan (tahun)', 'Pertumbuhan beban tahunan (%)',
+                  'Tahun', 'Tahun hasil', 'Nilai kini biaya periode (juta USD)',
+                  'Kapasitas eksogen (MW)', 'Kapasitas endogen (MW)', 'Eksogen kumulatif (MW)', 'Endogen kumulatif (MW)'}
 
 
 def capital_recovery_factor(rate, lifetime):
@@ -25,6 +29,30 @@ def capital_recovery_factor(rate, lifetime):
     if rate == 0:
         return 1/lifetime
     return rate / -np.expm1(-lifetime*np.log1p(rate))
+
+
+def planning_profile(profiles, base_year, planning_years, annual_growth=0.):
+    """Profil tahun akhir dari beban tahun dasar; annual_growth berupa pecahan.
+
+    Ini proyeksi untuk optimisasi satu tahun akhir, bukan ekspansi multiyear.
+    Profil sumber tidak dimutasi agar rerun tidak menggandakan pertumbuhan.
+    """
+    if (isinstance(base_year, bool) or not isinstance(base_year, (int, np.integer))
+            or not 1900 <= base_year <= 2200):
+        raise ValueError('Tahun dasar harus bilangan bulat antara 1900 dan 2200.')
+    if (isinstance(planning_years, bool) or not isinstance(planning_years, (int, np.integer))
+            or not 1 <= planning_years <= 50):
+        raise ValueError('Periode perencanaan harus bilangan bulat antara 1 dan 50 tahun.')
+    if not np.isfinite(annual_growth) or annual_growth <= -1:
+        raise ValueError('Pertumbuhan beban harus hingga dan lebih besar dari -100%.')
+    with np.errstate(over='ignore', invalid='ignore'):
+        factor = np.power(1.+annual_growth, planning_years)
+        demand = profiles['Beban (MW)'].to_numpy(dtype=float)*factor
+    if not np.isfinite(demand).all() or (demand < 0).any() or demand.sum() <= 0:
+        raise ValueError('Proyeksi beban tahun akhir harus hingga, tidak negatif, dan memiliki total positif.')
+    projected = profiles.copy()
+    projected['Beban (MW)'] = demand
+    return projected
 
 
 def validate_names(names):
@@ -38,20 +66,23 @@ def validate_names(names):
 
 
 def add_technology(technologies, profiles, name, investment, fixed_om, variable,
-                   emissions, maximum, lifetime, block_mw, availability):
+                   emissions, maximum, lifetime, block_mw, availability, existing_mw=0.):
     """Tambahkan teknologi dan profil secara atomik; input asli tidak diubah."""
     name = name.strip()
     validate_names(technologies['Teknologi'].tolist()+[name])
-    values = np.array([investment, fixed_om, variable, emissions, maximum, lifetime, block_mw], dtype=float)
+    values = np.array([investment, fixed_om, variable, emissions, maximum, lifetime, block_mw, existing_mw], dtype=float)
     if not np.isfinite(values).all() or (values < 0).any() or lifetime <= 0 or block_mw <= 0:
         raise ValueError('Biaya, emisi, dan batas kapasitas harus tidak negatif; umur dan ukuran blok harus positif.')
+    if maximum > 0 and existing_mw > maximum:
+        raise ValueError('Kapasitas tahun dasar tidak boleh melebihi batas kapasitas total.')
     availability = np.broadcast_to(np.asarray(availability, dtype=float), (len(profiles),))
     if not np.isfinite(availability).all() or (availability < 0).any() or (availability > 1).any():
         raise ValueError('Ketersediaan harus berada antara 0 dan 1.')
     row = {'Teknologi': name, 'O&M tetap (USD/kW/tahun)': fixed_om,
            'Biaya variabel (USD/MWh)': variable, 'Emisi (tCO2/MWh)': emissions,
            'Batas kapasitas (MW)': maximum, 'Investasi (USD/kW)': investment,
-           'Umur aset (tahun)': lifetime, 'Ukuran blok (MW)': block_mw}
+           'Umur aset (tahun)': lifetime, 'Ukuran blok (MW)': block_mw,
+           'Kapasitas tahun dasar (MW)': existing_mw}
     updated = pd.concat([technologies, pd.DataFrame([row])], ignore_index=True)
     updated_profiles = profiles.copy()
     updated_profiles[name] = availability
@@ -76,10 +107,11 @@ def example_inputs(peak_mw=100.0):
         'O&M tetap (USD/kW/tahun)': [40., 20., 12., 30.],
         'Biaya variabel (USD/MWh)': [35., 85., 0., 0.],
         'Emisi (tCO2/MWh)': [.95, .40, 0., 0.],
-        'Batas kapasitas (MW)': [300., 300., 300., 300.],
+        'Batas kapasitas (MW)': [0., 0., 0., 0.],
         'Investasi (USD/kW)': [1800., 700., 600., 1100.],
         'Umur aset (tahun)': [30., 25., 25., 25.],
         'Ukuran blok (MW)': [50., 25., 10., 10.],
+        'Kapasitas tahun dasar (MW)': [0., 0., 0., 0.],
     })
     profiles = pd.DataFrame({'Jam': np.arange(24), 'Beban (MW)': demand,
                              'PLTU': np.ones(24), 'PLTG': np.ones(24),
@@ -99,6 +131,7 @@ class BatteryConfig:
     investment_power: float = 300.  # USD/kW
     investment_energy: float = 150.  # USD/kWh
     lifetime: float = 15.  # tahun
+    existing_power_mw: float = 0.  # energi tahun dasar = daya × durasi
 
     def validate(self):
         values = np.array(list(vars(self).values()), dtype=float)
@@ -112,6 +145,8 @@ class BatteryConfig:
             raise ValueError('Efisiensi round-trip baterai harus lebih besar dari 0 dan maksimum 1.')
         if min(self.investment_power, self.investment_energy) < 0 or self.lifetime <= 0:
             raise ValueError('Investasi baterai harus tidak negatif dan umur baterai harus positif.')
+        if not 0 <= self.existing_power_mw <= self.max_power_mw:
+            raise ValueError('Daya tahun dasar penyimpanan harus tidak negatif dan tidak melebihi batas daya total.')
 
 
 @dataclass
@@ -156,7 +191,9 @@ def build_problem(technologies, profiles, carbon_price=0., emissions_limit=None,
     K dalam MW; p dalam MW; investasi USD/kW ditahunkan menurut umur dan
     discount_rate, lalu dijumlah O&M tetap USD/kW/tahun dan dikali 1.000.
     days adalah bobot setiap jam contoh dalam satu tahun.
-    Pada model integer, variabel kapasitas diganti jumlah blok N dan K = B*N.
+    Variabel kapasitas adalah penambahan baru; K_total = K_dasar + K_baru.
+    Pada model integer K_baru = B*N. Batas positif adalah batas TOTAL;
+    nilai nol berarti tanpa batas kapasitas pembangkit.
     block_sizes memetakan nama teknologi ke ukuran blok dalam MW.
     battery: BatteryConfig default opsional; storages: peta nama -> BatteryConfig
     untuk jenis penyimpanan tambahan, hanya untuk model integer. Siklus energi
@@ -175,6 +212,10 @@ def build_problem(technologies, profiles, carbon_price=0., emissions_limit=None,
     if not np.isfinite(params).all() or (params < 0).any():
         raise ValueError('Parameter pembangkit harus berupa angka hingga dan tidak negatif.')
     fixed_om, variable, emissions, maximum, investment, lifetime, default_blocks = params.T
+    existing = technologies.get('Kapasitas tahun dasar (MW)', pd.Series(0., index=technologies.index)).to_numpy(dtype=float)
+    if not np.isfinite(existing).all() or (existing < 0).any() or ((maximum > 0) & (existing > maximum)).any():
+        raise ValueError('Kapasitas tahun dasar harus tidak negatif, hingga, dan tidak melebihi batas kapasitas total.')
+    constant_cost = float(existing @ fixed_om * 1000)
     crf = capital_recovery_factor(discount_rate, lifetime)
     if (default_blocks <= 0).any():
         raise ValueError('Ukuran blok harus lebih besar dari nol.')
@@ -236,9 +277,10 @@ def build_problem(technologies, profiles, carbon_price=0., emissions_limit=None,
             a_eq[h, j] = 1
             a_ub[i*t+h, i] = -availability[i, h]*scale[i]
             a_ub[i*t+h, j] = 1
-    b_ub = np.zeros(n*t)
-    capacity_upper = np.floor(maximum/scale) if integer else maximum
-    bounds = [(0, float(m)) for m in capacity_upper] + [(0, None)]*(n*t)
+    b_ub = (availability*existing[:, None]).ravel()
+    remaining = np.where(maximum > 0, maximum-existing, np.inf)
+    capacity_upper = np.floor(remaining/scale) if integer else remaining
+    bounds = [(0, float(m) if np.isfinite(m) else None) for m in capacity_upper] + [(0, None)]*(n*t)
     integrality = np.r_[np.ones(n) if integer else np.zeros(n), np.zeros(n*t)]
     demand_rhs = demand.copy()
     storage_specs = []
@@ -254,8 +296,10 @@ def build_problem(technologies, profiles, carbon_price=0., emissions_limit=None,
         mode = base + 2 + 3*t + np.arange(t)
         extra = 4*t+2
         total = base+extra
-        max_blocks = np.floor(battery.max_power_mw/battery.block_mw)
-        max_power = max_blocks*battery.block_mw
+        max_blocks = np.floor((battery.max_power_mw-battery.existing_power_mw)/battery.block_mw)
+        max_power = battery.existing_power_mw+max_blocks*battery.block_mw
+        existing_energy = battery.existing_power_mw*battery.duration_hours
+        constant_cost += 1000*(battery.existing_power_mw*battery.power_cost+existing_energy*battery.energy_cost)
         block_energy = battery.block_mw*battery.duration_hours
         eta = np.sqrt(battery.round_trip_efficiency)
         battery_crf = float(capital_recovery_factor(discount_rate, battery.lifetime))
@@ -284,6 +328,9 @@ def build_problem(technologies, profiles, carbon_price=0., emissions_limit=None,
             ub[5*h+1, nb] = -battery.block_mw
             ub[5*h+2, soc[h]] = 1
             ub[5*h+2, nb] = -block_energy
+            rhs[5*h] = battery.existing_power_mw
+            rhs[5*h+1] = battery.existing_power_mw
+            rhs[5*h+2] = existing_energy
             # Biner mode operasi memakai batas daya tetap (big-M).
             ub[5*h+3, charge[h]] = 1
             ub[5*h+3, mode[h]] = -max_power
@@ -292,6 +339,7 @@ def build_problem(technologies, profiles, carbon_price=0., emissions_limit=None,
             rhs[5*h+4] = max_power
         ub[-1, soc[-1]] = 1
         ub[-1, nb] = -block_energy
+        rhs[-1] = existing_energy
         eq[-1, soc[-1]] = 1
         eq[-1, soc[0]] = -1
         a_eq = np.vstack([a_eq, eq])
@@ -311,7 +359,7 @@ def build_problem(technologies, profiles, carbon_price=0., emissions_limit=None,
         if not solution.success:
             if solution.status == 2:
                 context = dict(n=n, t=t, names=names, scale=scale, demand=demand, available=availability,
-                               maximum=maximum, battery=None, hours=profiles['Jam'].to_numpy(), days=days,
+                               maximum=maximum, existing=existing, battery=None, hours=profiles['Jam'].to_numpy(), days=days,
                                emissions=emissions, emissions_limit=emissions_limit, integer=integer)
                 context['storage_specs'] = storage_specs
                 diagnosis = diagnose(a_eq, demand_rhs, a_ub, b_ub, bounds, integrality, context)
@@ -319,17 +367,20 @@ def build_problem(technologies, profiles, carbon_price=0., emissions_limit=None,
                                  'dan batas emisi. Pada model integer, periksa juga ukuran blok. '
                                  'Semua beban harus terpenuhi pada setiap jam.', diagnosis)
             raise RuntimeError(f'Optimasi gagal: {solution.message}')
-        capacity = np.maximum(solution.x[:n]*scale, 0.)
+        added = np.maximum(solution.x[:n]*scale, 0.)
+        capacity = existing+added
         power = solution.x[n:n+n*t].reshape(n, t)
         energy = power.sum(axis=1)*days
         summary = pd.DataFrame({'Teknologi': names, 'Kapasitas (MW)': capacity,
+                                'Kapasitas tahun dasar (MW)': existing,
+                                'Kapasitas baru (MW)': added,
                                 'Produksi (MWh/tahun)': energy,
-                                'Biaya tetap (USD/tahun)': capacity*fixed*1000,
+                                'Biaya tetap (USD/tahun)': (added*investment*crf+capacity*fixed_om)*1000,
                                 'Biaya operasi (USD/tahun)': energy*variable,
                                 'Biaya karbon (USD/tahun)': energy*emissions*carbon_price,
                                 'Emisi (tCO2/tahun)': energy*emissions})
-        summary['Investasi awal (USD)'] = capacity*1000*investment
-        summary['Investasi tahunan (USD/tahun)'] = capacity*1000*investment*crf
+        summary['Investasi awal (USD)'] = added*1000*investment
+        summary['Investasi tahunan (USD/tahun)'] = added*1000*investment*crf
         summary['O&M tetap (USD/tahun)'] = capacity*1000*fixed_om
         summary['CRF (1/tahun)'] = crf
         if integer:
@@ -344,12 +395,13 @@ def build_problem(technologies, profiles, carbon_price=0., emissions_limit=None,
             nb, charge, discharge, soc = [spec[key] for key in ['nb', 'charge', 'discharge', 'soc']]
             battery_crf = spec['crf']
             blocks = int(round(solution.x[nb]))
-            battery_power = blocks*battery.block_mw
+            added_power = blocks*battery.block_mw
+            battery_power = battery.existing_power_mw+added_power
             battery_energy = battery_power*battery.duration_hours
             charged = solution.x[charge]
             discharged = solution.x[discharge]
             levels = solution.x[soc]
-            battery_investment = 1000*(battery_power*battery.investment_power + battery_energy*battery.investment_energy)
+            battery_investment = 1000*added_power*(battery.investment_power + battery.duration_hours*battery.investment_energy)
             battery_om = 1000*(battery_power*battery.power_cost + battery_energy*battery.energy_cost)
             operation = pd.DataFrame({'Jam': profiles['Jam'].to_numpy(), 'Isi baterai (MW)': charged,
                                       'Keluar baterai (MW)': discharged, 'Energi awal jam (MWh)': levels[:-1],
@@ -363,6 +415,10 @@ def build_problem(technologies, profiles, carbon_price=0., emissions_limit=None,
                 'Daya blok (MW)': battery.block_mw,
                 'Efisiensi round-trip (0–1)': battery.round_trip_efficiency,
                 'Jumlah blok': blocks, 'Daya (MW)': battery_power, 'Energi (MWh)': battery_energy,
+                'Daya tahun dasar (MW)': battery.existing_power_mw,
+                'Daya baru (MW)': added_power,
+                'Energi tahun dasar (MWh)': battery.existing_power_mw*battery.duration_hours,
+                'Energi baru (MWh)': added_power*battery.duration_hours,
                 'Durasi (jam)': battery.duration_hours,
                 'Biaya tetap (USD/tahun)': battery_investment*battery_crf+battery_om,
                 'Investasi awal (USD)': battery_investment,
@@ -378,7 +434,7 @@ def build_problem(technologies, profiles, carbon_price=0., emissions_limit=None,
         if storage_rows:
             for column in ['Isi baterai (MW)', 'Keluar baterai (MW)', 'Energi awal jam (MWh)', 'Energi akhir jam (MWh)']:
                 dispatch[column] = sum(operation[column].to_numpy() for operation in storage_dispatch.values())
-        return Result(summary, dispatch, float(solution.fun), float(demand.sum()*days),
+        return Result(summary, dispatch, float(solution.fun)+constant_cost, float(demand.sum()*days),
                       float(energy @ emissions), battery_summary, storage_dispatch)
 
     first_stage = list(range(n)) + [spec['nb'] for spec in storage_specs]

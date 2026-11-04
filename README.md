@@ -1,6 +1,12 @@
-# Lab Kapasitas Pembangkit
+# GENORA
+
+**GEN**eration **O**ptimization and **R**esource **A**dequacy
 
 Aplikasi Python berbahasa Indonesia untuk pembelajaran perencanaan kapasitas satu node.
+
+Logo UMY Electrical Engineering di atas judul dimuat dari
+`assets/umy_electrical_engineering.png`. Sertakan folder **assets** saat
+menyalin proyek atau mengunggahnya ke GitHub/Streamlit Cloud.
 
 ## Menjalankan
 
@@ -21,17 +27,114 @@ python -m venv .venv
 
 Buka alamat lokal yang ditampilkan Streamlit (biasanya http://localhost:8501).
 
+## Input dari Excel
+
+Buka **Input dari Excel — unduh template dan unggah data** di bagian atas halaman.
+
+1. Klik **Unduh Template Excel**.
+2. Isi workbook dan simpan sebagai `.xlsx`. Baca sheet **Petunjuk** dan
+   pertahankan nama sheet/header. Nilai contoh merupakan ilustrasi.
+3. Pilih skenario eksperimen tujuan, unggah file pada **Unggah Excel (.xlsx)**,
+   kemudian klik **Periksa Excel**.
+4. Jika ada kesalahan, perbaiki sheet/baris/kolom yang ditampilkan lalu unggah
+   dan periksa kembali. Jika valid, tinjau ringkasan dan klik
+   **Terapkan ke skenario aktif**.
+5. Periksa input yang tampil, kemudian klik **Jalankan Optimisasi**.
+
+Satu workbook memuat seluruh input satu skenario. Impor mengganti input dan
+menghapus hasil optimisasi lama pada skenario aktif; skenario lain dan riwayat
+perbandingan tetap tersedia. File diperiksa tanpa menjalankan solver. Validasi
+struktur/angka tidak menjamin model layak; diagnosis optimisasi tetap tersedia.
+Mengganti file atau skenario setelah pemeriksaan mewajibkan pemeriksaan ulang.
+
+| Sheet | Isi |
+| --- | --- |
+| Petunjuk | Panduan pengisian, satuan, aturan pewarisan tahun |
+| Pengaturan | Tahun, periode, pilihan model, puncak dasar, pertumbuhan, karbon, diskonto, batas emisi, stokastik dan pilihan profil |
+| Pembangkit | Nama, kapasitas dasar, investasi, O&M, biaya operasi, emisi, umur, ukuran blok, batas kapasitas |
+| Kapasitas Eksogen | Opsional: tahun operasi, teknologi pembangkit, tambahan eksogen MW |
+| Penyimpanan | Jenis, kapasitas awal, daya blok, durasi, efisiensi, batas daya, biaya dan umur |
+| Beban Puncak | Puncak untuk setiap tahun setelah tahun dasar; wajib lengkap pada mode manual |
+| Profil Beban | Tahun, jam 0–23, profil persen terhadap puncak; tahun dasar wajib lengkap |
+| Availability | Tahun, jam, teknologi, availability 0–1; tahun dasar wajib lengkap untuk semua pembangkit |
+| Stokastik | Nama skenario, probabilitas, nama parameter dan nilai; format panjang |
+
+Profil khusus tahun berikutnya ditambahkan sebagai baris baru dan diaktifkan
+melalui pilihan **Edit per tahun** di Pengaturan. Tahun tanpa data khusus tetap
+mewarisi tahun dasar. Availability khusus boleh hanya memuat teknologi yang
+diubah, tetapi setiap teknologi/tahun harus memiliki 24 jam lengkap.
+
+Pada Stokastik, ulangi probabilitas yang sama pada baris-baris parameter satu
+skenario. Jumlah probabilitas dihitung per skenario UNIK dan harus 1; setiap
+skenario harus mengisi kumpulan parameter yang sama. Parameter harus sama dengan
+nama pada katalog aplikasi untuk teknologi/model yang dipilih. Sheet ini boleh
+hanya berisi header bila stokastik dinonaktifkan.
+
+Nilai 60 pada Profil Beban berarti 60%; nilai 0,6 pada Availability berarti
+60%; diskonto/pertumbuhan menggunakan angka persen biasa, misalnya 8 untuk 8%.
+Angka langsung disarankan. Rumus harus sudah dihitung dan disimpan melalui Excel
+agar hasilnya tersimpan dalam file; aplikasi tidak menjalankan rumus Excel.
+Batas unggahan 10 MB, isi workbook setelah dibuka maksimum 50 MB.
+
+Template berada di `templates/GENORA_template.xlsx`. Saat menyalin proyek atau
+mengunggah ke GitHub/Streamlit Cloud, sertakan folder **templates**, modul
+**excel_inputs.py**, **excel_ui.py**, serta requirements terbaru (openpyxl).
+Node.js dan folder tools hanya dipakai untuk pembuatan template oleh pengembang;
+aplikasi dan mahasiswa tidak memerlukan Node.js.
+
 ## Cakupan awal
 
+### Skenario eksperimen dari skenario dasar
+
+Di sidebar **Kelola skenario**:
+
+1. Atur input pada **Skenario dasar** sesuai sistem yang ingin dipelajari.
+2. Buka **Tambah skenario dari dasar atau salinan lain**.
+3. Pilih **Salin dari skenario**, masukkan nama unik, lalu klik **Tambah Skenario**.
+4. Salinan menjadi skenario aktif. Ubah asumsi, misalnya harga karbon,
+   pertumbuhan beban, biaya investasi, batas emisi, atau batas kapasitas teknologi.
+5. Klik **Jalankan Optimisasi**. Gunakan **Skenario aktif** untuk berpindah dan
+   lihat **Ringkasan seluruh skenario eksperimen** di bawah hasil.
+
+Setiap skenario menyimpan pengaturan tahun, model, biaya/karbon, batas emisi,
+tabel pembangkit, kapasitas tahun dasar, profil beban/ketersediaan, seluruh jenis
+penyimpanan, serta parameter/probabilitas stokastik secara independen. Perubahan
+otomatis disimpan selama sesi. Mengubah salinan tidak mengubah sumber; perubahan
+pada sumber setelah penyalinan juga tidak diterapkan otomatis ke salinan.
+Skenario baru menyalin INPUT, bukan hasil optimisasi. Jalankan optimisasi sendiri
+untuk memperoleh hasilnya. Hasil lama tetap tersedia saat kembali ke skenario
+yang sudah dihitung, jika inputnya belum berubah. Hasil yang tidak sesuai input
+ditandai **Input berubah** dan dikeluarkan dari angka perbandingan terkini.
+
+Skenario dapat disalin dari skenario dasar atau dari salinan lain. Nama harus
+unik tanpa membedakan huruf besar/kecil. **Hapus skenario aktif** menghapus
+salinan dari sesi dan kembali ke skenario dasar; skenario dasar tidak dapat
+dihapus. Ringkasan perbandingan dapat diunduh sebagai CSV. Tombol **Simpan hasil
+untuk perbandingan** tetap tersedia untuk menyimpan riwayat hasil secara manual.
+
+Skenario eksperimen adalah kumpulan asumsi alternatif (misalnya Dasar, Karbon
+tinggi, Baterai murah). Ini berbeda dari skenario ketidakpastian beserta
+probabilitasnya di dalam satu model stokastik. Masing-masing skenario eksperimen
+dapat menggunakan model deterministik atau stokastik sendiri.
+
+Skenario, input, dan hasil disimpan dalam sesi browser, belum sebagai proyek
+permanen. Sesi baru atau refresh yang memutus sesi dapat menghapus data tersebut;
+unduh hasil yang ingin disimpan. Perbandingan biaya tahunan hanya bermakna jika
+tahun akhir, model, dan asumsi tiap skenario dipertimbangkan.
+
 Setelah mengubah input, tekan Enter atau klik sel lain untuk menyelesaikan edit,
-lalu klik **Jalankan Optimisasi** di bawah bagian input. Perubahan input tidak
+termasuk **Profil beban (% terhadap beban puncak)** dan **Availability setiap
+teknologi pembangkit**. Kedua tabel terpisah. Beban puncak tahun dasar diisi
+di bagian profil beban; beban puncak tahun berikutnya mengikuti tabel proyeksi.
+Tidak ada input beban puncak di sidebar.
+Klik **Jalankan Optimisasi** di bawah bagian input. Perubahan input tidak
 menjalankan solver secara otomatis. Hasil disimpan selama sesi dan tetap tampil
 saat diunduh atau disimpan untuk perbandingan, tanpa perhitungan ulang.
 Jika input/model/nama skenario berubah, hasil lama disembunyikan dengan pesan
 agar dihitung ulang. Hasil lama tidak dapat diunduh atau disimpan sebagai hasil
 input baru. Hasil yang sudah disimpan pada tabel perbandingan tetap tersedia.
 
-- Seluruh pembangkit dibangun baru (greenfield), satu tahun perencanaan.
+- Kapasitas terpasang tahun dasar + pembangunan baru setiap tahun perencanaan.
 - PLTU, PLTG, PLTS, PLTB; kapasitas kontinu (LP), blok integer (MILP), atau blok integer + baterai (MILP).
 - Beban dan ketersediaan 24 jam yang dapat diedit; satu hari diulang 365 kali.
 - Optimasi investasi yang ditahunkan, O&M tetap, operasi, dan karbon dengan SciPy/HiGHS.
@@ -50,13 +153,114 @@ Tidak ada transmisi, unit commitment pembangkit, ramping, cadangan, atau ganggua
 Variasi musim dan keandalan tahunan belum terwakili.
 Profil contoh ini tidak cocok untuk kesimpulan investasi nyata.
 
+## Tahun dasar dan periode perencanaan
+
+Atur di sidebar:
+
+- **Tahun dasar**, yaitu tahun data beban dan kapasitas terpasang (default 2025).
+- **Periode perencanaan (tahun)**, yaitu jarak dari tahun dasar ke tahun akhir
+  (1–50 tahun, default 1). Tahun dasar 2025 + periode 5 tahun menghasilkan tahun akhir 2030.
+- **Pertumbuhan beban tahunan (%)**, default 0%. Beban tahun akhir per jam
+  dihitung dari `beban tahun dasar × (1 + g)^periode`, dengan g berupa pecahan.
+
+Klik **Jalankan Optimisasi** setelah mengubah pengaturan. Tabel beban yang dapat
+diedit menyimpan profil persentase dan availability TAHUN DASAR secara terpisah.
+Proyeksi dibuat pada salinan, sehingga pertumbuhan tidak dihitung berulang saat
+rerun. Secara default bentuk profil mengikuti tahun dasar.
+Lihat **Proyeksi beban selama periode perencanaan** untuk puncak dan energi tiap
+tahun. Tabel ini adalah proyeksi beban, bukan hasil optimisasi tahunan.
+
+Pada bagian tersebut, **Metode proyeksi beban** menyediakan dua pilihan:
+**Pertumbuhan tahunan** menggunakan persentase di sidebar; **Manual per tahun**
+membuka tabel beban puncak yang dapat diedit untuk setiap tahun perencanaan.
+Tahun dasar mengikuti tabel profil persen dan input puncak tahun dasar.
+Energi tahunan dihitung dari profil tahun tersebut × puncak tahunan; energi
+tidak diedit terpisah. Klik **Jalankan Optimisasi** setelah menyelesaikan edit.
+
+### Profil beban dan availability berbeda per tahun
+
+**Profil beban (% terhadap beban puncak)** berisi kolom Jam dan Profil beban
+(% puncak). Masukkan nilai 0–100%, dan setidaknya satu jam harus 100%.
+Persentase antarjam tidak harus berjumlah 100%. Beban aktual setiap jam:
+`puncak_tahun × profil_persen_tahun / 100`. Input puncak tahun dasar berada
+di bagian ini; puncak tahun berikutnya dihitung atau diedit pada proyeksi.
+
+Pilih **Pola beban tahun berikutnya → Gunakan data tahun dasar** untuk memakai
+pola yang sama pada semua tahun. Pilih **Edit per tahun**, lalu pilih
+**Tahun profil beban yang diedit** untuk memasukkan pola khusus pada tahun itu.
+Tahun yang belum memiliki profil khusus mengikuti tahun dasar.
+
+**Availability setiap teknologi pembangkit** berisi Jam dan kolom per teknologi,
+dengan nilai 0–1. Pilih **Availability tahun berikutnya → Gunakan data tahun
+dasar** atau **Edit per tahun**, lalu pilih **Tahun availability yang diedit**.
+Pengaturan ini independen dari pola beban. Teknologi baru pada tabel tahunan
+mewarisi availability tahun dasar sampai diedit.
+
+Mengembalikan pilihan ke **Gunakan data tahun dasar** mengabaikan seluruh data
+khusus tahun berikutnya tanpa menghapusnya. Data khusus disimpan per tahun dan
+per skenario eksperimen. Mengubah input aktif membuat hasil perlu dihitung ulang.
+Proyeksi energi tahunan menjumlahkan beban dari profil tahun yang bersangkutan
+dan mengalikannya dengan 365. Pada stokastik, faktor beban/availability skenario
+diterapkan setelah profil setiap tahun dibentuk. Hasil dan diagnosis memakai
+profil aktual tahun tersebut, termasuk ketika periode hanya satu tahun.
+Input profil beban, beban aktual MW, dan availability semua tahun dapat diunduh
+melalui **Unduh profil beban dan availability seluruh tahun CSV** setelah optimisasi.
+
+Nilai manual disimpan per tahun dan per skenario eksperimen. Perubahan periode
+mempertahankan nilai tahun yang sama; tahun tambahan diisi dari pertumbuhan
+awal. Nilai yang sudah diedit tidak ditimpa ketika pertumbuhan berubah.
+**Isi ulang dari pertumbuhan tahunan** secara eksplisit mengisi ulang nilai
+manual. Dalam mode manual, pertumbuhan hanya dipakai untuk nilai awal/isi ulang;
+solver menggunakan puncak manual. Faktor beban stokastik kemudian mengalikan
+proyeksi manual tersebut. Mengganti metode kembali ke pertumbuhan mengabaikan
+nilai manual tanpa menghapusnya. Hasil lama ditandai berubah setelah edit.
+
+Periode lebih dari 1 tahun mengaktifkan **optimisasi multi tahun terpadu** untuk
+LP, integer, dan stokastik. Tahun dasar 2025 dan periode 5 tahun mengoptimasi
+2026, 2027, 2028, 2029, dan 2030 bersama-sama. Kapasitas kumulatif tidak boleh
+turun. Selisih kapasitas antar tahun menentukan pembangunan baru; bukan
+menjalankan optimisasi tiap tahun secara terpisah. Kapasitas baru tersedia sejak
+tahun penambahannya. Aset lama maupun baru tetap tersedia sepanjang horizon.
+
+Setiap tahun mempunyai dispatch 24 jam, proyeksi beban, batas emisi tahunan,
+dan siklus penyimpanan harian sendiri. Pada stokastik, faktor skenario
+mengalikan profil setiap tahun. Seluruh jadwal pembangunan merupakan keputusan
+tahap pertama yang sama untuk semua skenario; dispatch berbeda menurut tahun
+dan skenario. Belum ada keputusan investasi adaptif atau pohon multistage.
+Biaya, ukuran blok, dan batas emisi konstan antar tahun; ketersediaan mengikuti
+availability tahun dasar atau data khusus per tahun yang dipilih.
+Batas kapasitas positif membatasi total kapasitas pada SETIAP tahun;
+0 tetap berarti tanpa batas kapasitas pembangkit.
+
+Fungsi tujuan multi tahun meminimalkan **nilai kini biaya tahunan ekuivalen**:
+`sum_y biaya_tahunan[y] / (1+r)^y`, dengan tahun pertama y=1 (akhir tahun).
+Biaya tahunan terdiri atas investasi CRF pada tambahan KUMULATIF, O&M tetap
+seluruh kapasitas tersedia, operasi, dan karbon. Ini mempertahankan metode biaya
+model satu tahun. Investasi awal dilaporkan hanya untuk penambahan tahun itu;
+tidak ditambahkan lagi pada fungsi tujuan. Nilai kini ini bukan model arus kas
+CAPEX di muka dengan nilai sisa. Umur aset menentukan CRF, bukan pensiun
+otomatis. Belum ada nilai sisa eksplisit, penggantian aset, degradasi,
+masa konstruksi, atau pensiun. Karena itu horizon melampaui umur aset perlu
+ditafsirkan sesuai asumsi penyederhanaan ini.
+
+Hasil menampilkan nilai kini biaya periode, tabel biaya/emisi tiap tahun,
+tabel kapasitas awal tahun–penambahan–kapasitas akhir, jumlah blok baru,
+investasi pembangunan, dan rencana penyimpanan. Pilih **Tahun untuk rincian
+hasil dan dispatch** untuk melihat operasi dan biaya tahun tertentu.
+CSV rencana pembangkit, penyimpanan, hasil tahunan dan seluruh dispatch dapat
+diunduh. Grafik menampilkan tambahan dan kapasitas tersedia setiap tahun.
+Tabel perbandingan skenario selalu memakai kapasitas/biaya tahunan tahun akhir
+dan nilai kini seluruh periode, terlepas dari tahun rincian yang sedang dipilih.
+Jika tidak layak, diagnosis mengidentifikasi tahun pertama yang bermasalah.
+
 ## Pilihan model kapasitas
 
 Pilih **Kontinu (LP)** atau **Blok integer (MILP)** di sidebar. Pada model integer,
 atur ukuran blok per teknologi pada tabel pembangkit. Nilai awal: PLTU 50 MW,
-PLTG 25 MW, PLTS 10 MW, PLTB 10 MW. Kapasitas K = ukuran blok × jumlah blok,
-dengan jumlah blok berupa bilangan bulat tidak negatif. Batas kapasitas dibagi
-ukuran blok lalu dibulatkan ke bawah untuk menentukan jumlah blok maksimum.
+PLTG 25 MW, PLTS 10 MW, PLTB 10 MW. Kapasitas total K = kapasitas tahun dasar
++ ukuran blok × jumlah blok baru, dengan jumlah blok baru berupa bilangan bulat
+tidak negatif. (Batas kapasitas total − kapasitas tahun dasar) dibagi ukuran blok
+lalu dibulatkan ke bawah untuk menentukan jumlah blok baru maksimum.
 Biaya tetap tetap dihitung dari kapasitas dalam MW, bukan jumlah blok saja.
 
 Kedua model diselesaikan dengan HiGHS melalui `scipy.optimize.linprog`.
@@ -67,22 +271,113 @@ Simpan hasil setiap mode untuk membandingkan biaya, kapasitas, dan emisi.
 
 ## Tambah teknologi dan biaya investasi
 
+### Penambahan kapasitas eksogen
+
+Buka **Penambahan kapasitas eksogen pembangkit** di bawah tabel pembangkit.
+Tambahkan baris, isi **Tahun operasi**, **Teknologi**, dan **Tambahan eksogen
+(MW)**, lalu klik **Jalankan Optimisasi**. Nama teknologi harus sudah ada pada
+tabel pembangkit. Tahun operasi wajib berada setelah tahun dasar sampai tahun
+akhir. Beberapa proyek dengan teknologi/tahun sama dijumlahkan. Tabel kosong
+berarti tidak ada proyek. Fitur ini berlaku pada perencanaan satu/multi tahun,
+LP, integer, dan stokastik; saat ini eksogen khusus pembangkit.
+
+Kapasitas setiap tahun = kapasitas tahun dasar + eksogen kumulatif + endogen
+kumulatif. Eksogen tersedia sejak tahun operasi dan tetap tersedia pada tahun
+berikutnya. Endogen adalah tambahan yang dipilih solver. Eksogen tidak perlu
+kelipatan blok; jumlah blok pada hasil hanya menghitung tambahan ENDOGEN.
+Solver mengoptimasi seluruh jadwal dengan memperhitungkan proyek masa depan,
+tanpa mengizinkan kapasitas tersebut memasok listrik sebelum tahun operasinya.
+
+Batas positif membatasi total kapasitas dasar + eksogen + endogen. Karena
+kapasitas endogen tidak dipensiunkan, pembangunan yang diperlukan lebih awal
+dapat bertentangan dengan proyek eksogen yang masuk kemudian. Model mendeteksi
+ketidaklayakan gabungan ini. Jadwal eksogen yang sudah melampaui batas total
+ditolak sebagai input; nilai 0 pada batas tetap berarti tanpa batas kapasitas.
+
+Investasi awal dilaporkan pada tahun penambahan eksogen/endogen. Investasi
+yang ditahunkan (CRF) dan O&M eksogen masuk biaya sistem sejak tahun operasi,
+dengan parameter biaya dan umur teknologi yang sama. Model tetap menggunakan
+nilai kini biaya tahunan ekuivalen, bukan arus kas CAPEX di muka. Pada stokastik,
+jadwal eksogen sama untuk semua skenario; biaya/profil dapat mengikuti parameter
+ketidakpastian skenario. Angka hasil memisahkan eksogen, endogen, dan kumulatif.
+
+Jadwal tersimpan per skenario eksperimen dan ikut disalin saat menambah skenario.
+Penghapusan pembangkit membersihkan proyek eksogen terkait pada skenario aktif.
+Template Excel terbaru menyertakan sheet **Kapasitas Eksogen** yang boleh kosong.
+Workbook lama tanpa sheet ini tetap diterima sebagai tanpa kapasitas eksogen.
+
+Klik **Hapus Teknologi**, pilih pembangkit atau penyimpanan tambahan, lalu
+**Hapus dari skenario aktif** untuk menghapusnya. Pembangkit juga dihapus dari
+availability tahun dasar dan seluruh tahun khusus. Parameter ketidakpastian
+dan kolom skenario stokastik milik teknologi tersebut ikut dibersihkan;
+probabilitas dan data teknologi lain dipertahankan. Hasil yang sudah dihitung
+perlu dioptimasi ulang. Penghapusan hanya berlaku pada skenario aktif;
+skenario sumber/salinan lain serta riwayat perbandingan tetap tersedia.
+
+Setidaknya satu teknologi pembangkit harus tersisa. Baterai default tidak
+berada pada tabel penyimpanan tambahan; untuk menonaktifkannya, atur daya
+tahun dasar dan batas daya menjadi nol.
+
+### Kapasitas terpasang pada tahun dasar
+
+Isi **Kapasitas tahun dasar (MW)** pada tabel pembangkit, lalu klik
+**Jalankan Optimisasi**. Nilai awal 0 mempertahankan contoh greenfield sebelumnya.
+**Batas kapasitas (MW)** tetap merupakan batas TOTAL kapasitas lama + baru dan
+bernilai **0 secara default, artinya tanpa batas kapasitas**. Jika diisi positif,
+nilainya harus sekurangnya sebesar kapasitas tahun dasar. Contoh: aset lama 35 MW, blok
+baru 10 MW, batas total 100 MW: penambahan maksimum 60 MW, total efektif 95 MW.
+Kapasitas lama tidak perlu kelipatan blok. Pada model LP, penambahan bebas kontinu.
+
+Investasi historis dianggap sunk cost dan tidak dihitung ulang. Investasi awal
+dan investasi tahunan hanya untuk penambahan baru; O&M tetap untuk kapasitas
+lama + baru. Biaya operasi dan emisi dihitung dari dispatch seluruh pembangkit.
+Biaya sistem mencakup O&M aset lama meskipun tidak beroperasi. Grafik menumpuk
+kapasitas tahun dasar dan penambahan; tabel/CSV juga mencantumkan kapasitas total.
+Kolom **Jumlah blok** menyatakan jumlah blok BARU.
+
+Pada penyimpanan, isi **Daya tahun dasar baterai (MW)** atau **Daya tahun dasar
+(MW)** pada tabel jenis tambahan/formulir Tambah Teknologi. Batas daya juga batas
+total lama + baru. Energi tahun dasar = daya tahun dasar × durasi; durasi dan
+efisiensi berlaku bersama untuk aset lama dan baru pada jenis tersebut. Jika
+karakteristik berbeda, masukkan sebagai jenis terpisah. Investasi daya/energi
+hanya dikenai pada penambahan; O&M tetap pada seluruh daya/energi terpasang.
+
+Berlaku untuk LP, blok integer, dan stokastik; kapasitas dasar sama pada semua
+skenario dan hanya penambahan yang diputuskan pada tahap pertama. Diagnosis
+memperhitungkan kapasitas dasar dan sisa batas pembangunan. Aset lama diasumsikan
+tetap tersedia sepanjang tahun perencanaan: belum ada pensiun, sisa umur,
+pelunasan investasi historis. Profil beban yang
+diinput adalah beban tahun dasar; proyeksi beban mengikuti pengaturan periode
+dan pertumbuhan di sidebar.
+
 Klik **Tambah Teknologi**, isi formulir, lalu **Tambahkan ke model**. Masukkan nama
 unik, investasi USD/kW, umur aset, O&M tetap, biaya variabel, emisi, batas kapasitas,
 ukuran blok, dan profil ketersediaan awal (konstan atau contoh PLTS/PLTB).
 Profil 24 jam dapat diedit pada bagian profil. Teknologi baru langsung masuk
 ke optimisasi semua mode, grafik, CSV, perbandingan, dan diagnosis. Input lama
-dipertahankan saat menambah teknologi. Batas kapasitas nol menonaktifkan teknologi.
+dipertahankan saat menambah teknologi. Batas kapasitas pembangkit **0 berarti
+tanpa batas**, bukan menonaktifkan teknologi. Untuk meniadakan produksi, set
+ketersediaannya menjadi nol pada seluruh jam. O&M tetap kapasitas lama tetap
+diperhitungkan. Nilai positif membatasi total kapasitas lama + baru, termasuk
+pembulatan sisa pembangunan pada model integer. Aturan ini berlaku untuk LP,
+MILP, dan stokastik. Keseimbangan daya, ketersediaan, serta batas emisi tetap
+berlaku meskipun batas kapasitas dihilangkan. Nilai batas positif yang sudah
+diedit tidak diubah otomatis; ganti menjadi 0 bila ingin tanpa batas.
+
+Aturan nol ini khusus **batas kapasitas pembangkit**. Batas daya penyimpanan
+tetap memakai batas fisik positif untuk mode operasi biner; nol tetap berarti
+tidak ada kapasitas penyimpanan yang dapat digunakan/dibangun.
 Data disimpan selama sesi, bukan ke basis data permanen. Ini pembangkit dengan
 profil ketersediaan; penambahan PLTA tidak otomatis membuat model reservoir.
 
 Tingkat diskonto bersama di sidebar (default 8%) dan umur aset per teknologi
 menentukan capital recovery factor: `CRF = r / (1 - (1+r)^(-L))` untuk r > 0,
-dan `CRF = 1/L` untuk r = 0. Investasi awal = 1.000 × MW × investasi USD/kW.
+dan `CRF = 1/L` untuk r = 0. Investasi awal = 1.000 × MW baru × investasi USD/kW.
 Investasi tahunan = investasi awal × CRF. Biaya tetap tahunan = investasi tahunan
 + O&M tetap tahunan. Fungsi tujuan menjumlahkan biaya tetap, operasi, dan karbon;
-investasi awal tidak ditambahkan lagi. Model tetap satu tahun representatif,
-bukan optimisasi ekspansi multiyear. Tidak ada nilai sisa atau jadwal penggantian aset.
+investasi awal tidak ditambahkan lagi. Model multi tahun mendiskontokan biaya
+tahunan ekuivalen ini dan mengoptimasi tambahan setiap tahun secara bersama.
+Tidak ada nilai sisa atau jadwal penggantian aset.
 
 CSV dan tabel hasil merinci investasi awal, investasi tahunan, O&M tetap, dan CRF.
 Kolom biaya tetap sudah mencakup investasi tahunan + O&M tetap: jangan menjumlahkan
@@ -124,7 +419,7 @@ Kapasitas nol adalah hasil yang valid jika baterai tidak ekonomis atau tidak dib
 Klik **Tambah Teknologi**, pilih **Penyimpanan energi** pada **Jenis teknologi baru**,
 isi nama dan parameter, lalu klik **Tambahkan penyimpanan ke model**. Aplikasi
 otomatis memilih **Blok integer + penyimpanan (MILP)**. Baterai default tetap
-tersedia; ubah batas dayanya menjadi nol jika tidak ingin menggunakannya.
+tersedia; ubah daya tahun dasar dan batas dayanya menjadi nol jika tidak ingin menggunakannya.
 
 Setiap jenis tambahan memiliki daya blok (MW), durasi (jam), batas daya (MW),
 efisiensi round-trip, investasi daya/energi, O&M daya/energi, biaya per MWh keluar,

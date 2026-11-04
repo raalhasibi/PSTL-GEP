@@ -5,6 +5,7 @@ from model import BatteryConfig, validate_names
 
 
 STORAGE_COLUMNS = {
+    'Daya tahun dasar (MW)': 'existing_power_mw',
     'Daya blok (MW)': 'block_mw', 'Durasi (jam)': 'duration_hours',
     'Batas daya (MW)': 'max_power_mw', 'O&M daya (USD/kW/tahun)': 'power_cost',
     'O&M energi (USD/kWh/tahun)': 'energy_cost', 'Efisiensi round-trip (0–1)': 'round_trip_efficiency',
@@ -28,7 +29,7 @@ def storage_configs(table, validate=True):
     validate_names(table.Teknologi.tolist())
     configs = {}
     for _, row in table.iterrows():
-        config = BatteryConfig(**{field: float(row[column]) for column, field in STORAGE_COLUMNS.items()})
+        config = BatteryConfig(**{field: float(row.get(column, 0.)) for column, field in STORAGE_COLUMNS.items()})
         if validate:
             config.validate()
         configs[row.Teknologi] = config

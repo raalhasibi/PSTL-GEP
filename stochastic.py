@@ -92,9 +92,14 @@ class StochasticResult(Result):
     scenario_metrics: pd.DataFrame = field(default_factory=pd.DataFrame)
     scenario_inputs: pd.DataFrame = field(default_factory=pd.DataFrame)
     uncertainty_parameters: list = field(default_factory=list)
+    year_results: dict = field(default_factory=dict)
+    annual_metrics: pd.DataFrame = field(default_factory=pd.DataFrame)
+    capacity_plan: pd.DataFrame = field(default_factory=pd.DataFrame)
+    storage_plan: pd.DataFrame = field(default_factory=pd.DataFrame)
+    npv_cost: float | None = None
 
 
-def solve_stochastic(technologies, profiles, scenarios, uncertainty_parameters=None, **kwargs):
+def solve_stochastic(technologies, profiles, scenarios, uncertainty_parameters=None, problem_builder=build_problem, **kwargs):
     names = technologies['Teknologi'].tolist()
     catalog = uncertainty_catalog(technologies, **kwargs)
     selected = [c for c in scenarios.columns if c not in ['Skenario', 'Probabilitas']] if uncertainty_parameters is None else list(uncertainty_parameters)
@@ -122,20 +127,26 @@ def solve_stochastic(technologies, profiles, scenarios, uncertainty_parameters=N
         if spec['maximum'] is not None and (scenarios[column] > spec['maximum']).any():
             raise ValueError(f'{column} tidak boleh lebih dari {spec["maximum"]:g}.')
     # Validasi profil dasar sebelum clipping hasil pengalian faktor skenario.
-    build_problem(technologies, profiles, **kwargs)
+    problem_builder(technologies, profiles, **kwargs)
     problems = []
     for _, row in scenarios.iterrows():
         scenario_profile = profiles.copy()
         scenario_tech = technologies.copy()
         scenario_options = dict(kwargs)
+        if kwargs.get('annual_profiles') is not None:
+            scenario_options['annual_profiles'] = {year: frame.copy() for year, frame in kwargs['annual_profiles'].items()}
         scenario_options['storages'] = dict(kwargs.get('storages') or {})
         for column in selected:
             spec, value = catalog[column], float(row[column])*catalog[column]['scale']
             if spec['scope'] == 'load':
                 scenario_profile['Beban (MW)'] = profiles['Beban (MW)']*value
+                for frame in scenario_options.get('annual_profiles', {}).values():
+                    frame['Beban (MW)'] *= value
             elif spec['scope'] == 'availability':
                 name = spec['target']
                 scenario_profile[name] = np.clip(profiles[name].to_numpy(dtype=float)*value, 0., 1.)
+                for frame in scenario_options.get('annual_profiles', {}).values():
+                    frame[name] = np.clip(frame[name].to_numpy(dtype=float)*value, 0., 1.)
             elif spec['scope'] == 'global':
                 scenario_options[spec['field']] = value
             elif spec['scope'] == 'generator':
@@ -146,7 +157,7 @@ def solve_stochastic(technologies, profiles, scenarios, uncertainty_parameters=N
                     scenario_options['battery'] = replace(scenario_options['battery'], **{spec['field']: value})
                 else:
                     scenario_options['storages'][name] = replace(scenario_options['storages'][name], **{spec['field']: value})
-        problems.append(build_problem(scenario_tech, scenario_profile, **scenario_options))
+        problems.append(problem_builder(scenario_tech, scenario_profile, **scenario_options))
 
     # Salinan variabel kapasitas ditautkan antar skenario (non-anticipativity).
     # Bobot probabilitas pada semua biaya membuat biaya tetap terhitung sekali.
@@ -198,6 +209,10 @@ def solve_stochastic(technologies, profiles, scenarios, uncertainty_parameters=N
                         'Energi beban (MWh/tahun)': result.annual_energy, 'Emisi (tCO2/tahun)': result.annual_emissions,
                         'Kontribusi biaya ekspektasian (USD/tahun)': prob*result.annual_cost})
 
+    return aggregate_results(results, probabilities, scenarios[required].copy(), selected)
+
+
+def aggregate_results(results, probabilities, scenarios, selected):
     def average_tables(tables):
         if tables[0] is None:
             return None
@@ -212,10 +227,27 @@ def solve_stochastic(technologies, profiles, scenarios, uncertainty_parameters=N
         return average_tables([getattr(r, attribute) for r in results.values()])
 
     storage_names = next(iter(results.values())).storage_dispatch
-    return StochasticResult(summary=average_table('summary'), dispatch=average_table('dispatch'), annual_cost=float(solution.fun),
+    metrics = [{'Skenario': label, 'Probabilitas': prob, 'Biaya (USD/tahun)': r.annual_cost,
+                'Energi beban (MWh/tahun)': r.annual_energy, 'Emisi (tCO2/tahun)': r.annual_emissions,
+                'Kontribusi biaya ekspektasian (USD/tahun)': prob*r.annual_cost}
+               for (label, r), prob in zip(results.items(), probabilities)]
+    combined = StochasticResult(summary=average_table('summary'), dispatch=average_table('dispatch'),
+                            annual_cost=sum(prob*r.annual_cost for prob, r in zip(probabilities, results.values())),
                             annual_energy=sum(prob*r.annual_energy for prob, r in zip(probabilities, results.values())),
                             annual_emissions=sum(prob*r.annual_emissions for prob, r in zip(probabilities, results.values())),
                             battery_summary=average_table('battery_summary'),
                             storage_dispatch={name: average_tables([r.storage_dispatch[name] for r in results.values()]) for name in storage_names},
-                            scenario_results=results, scenario_metrics=pd.DataFrame(metrics), scenario_inputs=scenarios[required].copy(),
+                            scenario_results=results, scenario_metrics=pd.DataFrame(metrics), scenario_inputs=scenarios.copy(),
                             uncertainty_parameters=selected)
+    first = next(iter(results.values()))
+    if getattr(first, 'year_results', {}):
+        combined.year_results = {year: aggregate_results({label: r.year_results[year] for label, r in results.items()},
+            probabilities, scenarios, selected) for year in first.year_results}
+        combined.annual_metrics = average_table('annual_metrics')
+        combined.capacity_plan = average_table('capacity_plan')
+        combined.storage_plan = average_table('storage_plan')
+        combined.npv_cost = sum(prob*r.npv_cost for prob, r in zip(probabilities, results.values()))
+        for metric, r in zip(metrics, results.values()):
+            metric['Nilai kini biaya periode (USD)'] = r.npv_cost
+        combined.scenario_metrics = pd.DataFrame(metrics)
+    return combined

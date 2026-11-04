@@ -11,6 +11,7 @@ def diagnose(a_eq, b_eq, a_ub, b_ub, bounds, integrality, context):
     names, scale = context['names'], context['scale']
     demand, available = context['demand'], context['available']
     maximum = context['maximum']
+    existing = context.get('existing', np.zeros(n))
     storage_specs = context.get('storage_specs', [])
     size = a_eq.shape[1]
     integer = bool(np.any(integrality))
@@ -25,13 +26,23 @@ def diagnose(a_eq, b_eq, a_ub, b_ub, bounds, integrality, context):
                        integrality=integrality if kinds is None else kinds,
                        method='highs', options={'time_limit': 5., 'mip_rel_gap': 0.} if integer else {'time_limit': 5.})
 
-    effective = np.array([b[1] for b in bounds[:n]])*scale
-    gen_power = available.T @ effective
-    bat_power = sum(bounds[spec['nb']][1]*spec['config'].block_mw for spec in storage_specs)
+    effective = existing+np.array([b[1] if b[1] is not None else np.inf for b in bounds[:n]])*scale
+    # Teknologi tanpa batas dan ketersediaan nol tetap memasok nol, bukan NaN.
+    contributions = np.zeros_like(available, dtype=float)
+    np.multiply(available, effective[:, None], out=contributions, where=available > 0)
+    gen_power = contributions.sum(axis=0)
+    unused = np.zeros(n)
+    np.subtract(maximum, effective, out=unused, where=maximum > 0)
+    bat_power = sum(spec['config'].existing_power_mw+bounds[spec['nb']][1]*spec['config'].block_mw for spec in storage_specs)
     shortage_bound = np.maximum(0., demand-gen_power-bat_power)
     report['capacity'] = pd.DataFrame({'Teknologi': names, 'Batas input (MW)': maximum,
                                        'Batas efektif (MW)': effective,
-                                       'Tidak terpakai karena blok (MW)': maximum-effective})
+                                       'Tanpa batas kapasitas': maximum == 0,
+                                       'Tidak terpakai karena blok (MW)': unused})
+    if np.any(maximum == 0):
+        notes.append('Batas kapasitas pembangkit bernilai 0 berarti tanpa batas pembangunan. '
+                     'Nilai inf pada batas pasokan menunjukkan tidak ada batas kapasitas; '
+                     'profil ketersediaan dan batas emisi tetap berlaku.')
     if np.any(shortage_bound > 1e-6):
         h = int(np.argmax(shortage_bound))
         notes.append(f"Batas pasokan pasti kurang pada jam {context['hours'][h]}: beban {demand[h]:.2f} MW, "
@@ -41,7 +52,7 @@ def diagnose(a_eq, b_eq, a_ub, b_ub, bounds, integrality, context):
         notes.append(f'Energi pembangkitan maksimum hanya {gen_power.sum():.2f} MWh/hari contoh, '
                      f'di bawah kebutuhan {demand.sum():.2f} MWh. Baterai siklik tidak menghasilkan energi baru; '
                      'penambahan baterai saja tidak cukup. Naikkan batas pembangkit yang tersedia atau periksa beban/profil.')
-    if np.any(maximum-effective > 1e-6):
+    if np.any(unused > 1e-6):
         notes.append('Ukuran blok membuat sebagian batas kapasitas tidak dapat dibangun. '
                      'Periksa tabel batas efektif; pertimbangkan blok lebih kecil atau batas kapasitas yang mencapai kelipatan berikutnya.')
 
@@ -95,15 +106,17 @@ def diagnose(a_eq, b_eq, a_ub, b_ub, bounds, integrality, context):
 
     # Uji contoh perubahan satu parameter, tidak mengklaim perubahan minimum.
     for i, name in enumerate(names):
+        if maximum[i] == 0:
+            continue
         positive = available[i] > 1e-6
         if not positive.any():
             continue
         required = float(np.max(demand[positive]/available[i, positive]))
-        proposed = math.ceil(required/scale[i])*scale[i] if context['integer'] else required
+        proposed = existing[i]+math.ceil(max(0., required-existing[i])/scale[i])*scale[i] if context['integer'] else max(existing[i], required)
         if proposed <= maximum[i]+1e-6:
             continue
         limits = list(bounds)
-        limits[i] = (0., proposed/scale[i])
+        limits[i] = (0., (proposed-existing[i])/scale[i])
         if run(limits=limits).success:
             suggestions.append({'Parameter': f'Batas kapasitas (MW) · {name}', 'Saat ini': float(maximum[i]),
                                 'Contoh nilai layak': proposed,
@@ -111,7 +124,7 @@ def diagnose(a_eq, b_eq, a_ub, b_ub, bounds, integrality, context):
 
     if context['integer']:
         for i, name in enumerate(names):
-            if maximum[i]-effective[i] <= 1e-6:
+            if unused[i] <= 1e-6:
                 continue
             for divisor in (2., 4., 10.):
                 proposed = scale[i]/divisor
@@ -119,7 +132,7 @@ def diagnose(a_eq, b_eq, a_ub, b_ub, bounds, integrality, context):
                     continue
                 ub, limits = a_ub.copy(), list(bounds)
                 ub[:, i] *= proposed/scale[i]
-                limits[i] = (0., float(np.floor(maximum[i]/proposed)))
+                limits[i] = (0., float(np.floor((maximum[i]-existing[i])/proposed)))
                 if run(ub=ub, limits=limits).success:
                     suggestions.append({'Parameter': f'Ukuran blok (MW) · {name}', 'Saat ini': float(scale[i]),
                                         'Contoh nilai layak': proposed,
@@ -129,7 +142,7 @@ def diagnose(a_eq, b_eq, a_ub, b_ub, bounds, integrality, context):
     for spec in storage_specs:
         battery, name, start = spec['config'], spec['name'], spec['ub_start']
         nb, charge, discharge, soc, mode = [spec[k] for k in ('nb', 'charge', 'discharge', 'soc', 'mode')]
-        power_limit = bounds[nb][1]*battery.block_mw
+        power_limit = battery.existing_power_mw+bounds[nb][1]*battery.block_mw
         notes.append(f'{name} dibatasi {power_limit:g} MW / {power_limit*battery.duration_hours:g} MWh setelah pembulatan blok. '
                      'Periksa daya per blok, batas daya, durasi, efisiensi, dan ketersediaan energi untuk pengisian; '
                      'energi awal dan akhir hari wajib sama.')
@@ -138,8 +151,8 @@ def diagnose(a_eq, b_eq, a_ub, b_ub, bounds, integrality, context):
                 ub, rhs, limits = a_ub.copy(), b_ub.copy(), list(bounds)
                 if kind == 'power':
                     proposed = max(current, battery.block_mw)*factor
-                    blocks = math.floor(proposed/battery.block_mw)
-                    power = blocks*battery.block_mw
+                    blocks = math.floor((proposed-battery.existing_power_mw)/battery.block_mw)
+                    power = battery.existing_power_mw+blocks*battery.block_mw
                     limits[nb] = (0., float(blocks))
                     for h in range(t):
                         ub[start+5*h+3, mode[h]] = -power
@@ -150,7 +163,9 @@ def diagnose(a_eq, b_eq, a_ub, b_ub, bounds, integrality, context):
                     proposed = current*factor
                     for h in range(t):
                         ub[start+5*h+2, nb] = -battery.block_mw*proposed
+                        rhs[start+5*h+2] = battery.existing_power_mw*proposed
                     ub[start+5*t, nb] = -battery.block_mw*proposed
+                    rhs[start+5*t] = battery.existing_power_mw*proposed
                     label = 'Durasi baterai (jam)' if name == 'Baterai' else f'Durasi (jam) · {name}'
                 if run(ub=ub, rhs=rhs, limits=limits).success:
                     suggestions.append({'Parameter': label, 'Saat ini': current, 'Contoh nilai layak': proposed,
