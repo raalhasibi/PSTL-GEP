@@ -84,7 +84,7 @@ aplikasi dan mahasiswa tidak memerlukan Node.js.
 
 ## Cakupan awal
 
-### Skenario eksperimen dari skenario dasar
+### Skenario alternatif dari skenario dasar
 
 Di sidebar **Kelola skenario**:
 
