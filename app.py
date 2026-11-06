@@ -11,7 +11,7 @@ from stochastic import MAX_SCENARIOS, example_scenarios, resize_scenarios, solve
 from storage_inputs import STORAGE_COLUMNS, add_storage, empty_storage_table, storage_configs
 from scenario_manager import initialize, save_active, switch_active, create_case, delete_active, case_overview
 from multiyear import build_multiyear_problem, solve_multiyear
-from year_profiles import LOAD_PERCENT, make_annual_profiles, validate_shape
+from year_profiles import LOAD_PERCENT, LOAD_PRESETS, preset_load_shape, make_annual_profiles, validate_shape
 from excel_ui import render_excel_inputs
 from technology_management import remove_technology
 from exogenous import empty_exogenous, validate_exogenous
@@ -19,6 +19,18 @@ from solver_backend import solver_session
 from solver_ui import current_solver_settings, render_solver_controls
 
 STORAGE_MODEL_LABEL = 'Blok integer + penyimpanan (MILP)'
+
+
+def load_preset_controls(table, scope, editor_key):
+    preset = st.selectbox('Pilihan pengisian profil beban', LOAD_PRESETS,
+                          key=f'load_preset_choice_{scope}')
+    st.caption('Pola ilustratif: Flat = 100% sepanjang hari; selisih tinggi = 40–100%; '
+               'selisih moderat = 70–100%. Pola bervariasi berpuncak pukul 19 dan terendah pukul 03. '
+               'Klik Terapkan untuk mengganti tabel yang sedang ditampilkan; tabel tetap dapat diedit manual.')
+    if st.button('Terapkan profil beban', key=f'load_preset_apply_{scope}', disabled=preset == 'Manual'):
+        table = preset_load_shape(table['Jam'], preset)
+        st.session_state.pop(editor_key, None)
+    return table
 
 st.set_page_config(page_title='GENORA', page_icon='⚡', layout='wide')
 st.image(str(Path(__file__).resolve().parent/'assets'/'umy_electrical_engineering.png'), width=420)
@@ -387,7 +399,9 @@ with inputs:
             value=float(profile['Beban (MW)'].max()) if float(profile['Beban (MW)'].max()) > 0 else 100., key='base_peak_mw')
         st.caption(f'Tahun dasar {base_year}: beban tiap jam = beban puncak × profil (%) / 100. '
                    'Isi 0–100%; setidaknya satu jam harus mencapai 100%. Persentase antarjam tidak dijumlahkan menjadi 100%.')
-        base_shape = st.data_editor(st.session_state['base_load_shape'], hide_index=True, disabled=['Jam'],
+        st.write('**Profil tahun dasar**')
+        base_shape_input = load_preset_controls(st.session_state['base_load_shape'], 'base', f'load_shape_editor_base_{revision}')
+        base_shape = st.data_editor(base_shape_input, hide_index=True, disabled=['Jam'],
             key=f'load_shape_editor_base_{revision}', column_config={LOAD_PERCENT: st.column_config.NumberColumn(min_value=0., max_value=100., required=True)})
         st.session_state['base_load_shape'] = base_shape.copy()
         load_shape_mode = st.selectbox('Pola beban tahun berikutnya', ['Gunakan data tahun dasar', 'Edit per tahun'], key='load_shape_mode')
@@ -395,6 +409,8 @@ with inputs:
             shape_year = st.selectbox('Tahun profil beban yang diedit', list(range(base_year+1, target_year+1)))
             shapes = dict(st.session_state.get('annual_load_shapes', {}))
             selected_shape = shapes.get(shape_year, base_shape).copy()
+            st.write(f'**Profil tahun {shape_year}**')
+            selected_shape = load_preset_controls(selected_shape, str(shape_year), f'load_shape_editor_{shape_year}_{revision}')
             changed_shape = st.data_editor(selected_shape, hide_index=True, disabled=['Jam'],
                 key=f'load_shape_editor_{shape_year}_{revision}', column_config={LOAD_PERCENT: st.column_config.NumberColumn(min_value=0., max_value=100., required=True)})
             shapes[shape_year] = changed_shape.copy()

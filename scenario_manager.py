@@ -25,7 +25,7 @@ DATA_KEYS = {
 }
 SNAPSHOT_KEYS = CONTROL_KEYS | DATA_KEYS
 EDITOR_PREFIXES = ('technology_v2_', 'profiles_v2_', 'storage_inputs_', 'stochastic_inputs_', 'manual_forecast_editor_',
-                   'load_shape_editor_', 'availability_editor_', 'exogenous_editor_')
+                   'load_shape_editor_', 'availability_editor_', 'exogenous_editor_', 'load_preset_')
 
 
 def initialize(state):

@@ -4,6 +4,30 @@ import pandas as pd
 
 
 LOAD_PERCENT = 'Profil beban (% puncak)'
+LOAD_PRESETS = ('Manual', 'Flat', 'Selisih puncak–dasar tinggi', 'Selisih puncak–dasar moderat')
+
+
+def preset_load_shape(hours, preset):
+    """Pola harian ilustratif; dasar 40% / 70%, puncak pukul 19."""
+    hours = list(hours)
+    h = np.asarray(hours, dtype=float)
+    if not len(h) or not np.isfinite(h).all() or (h < 0).any() or (h > 23).any() or (h != np.floor(h)).any() or len(set(hours)) != len(hours):
+        raise ValueError('Profil otomatis memerlukan jam unik berupa bilangan bulat 0–23.')
+    if preset not in LOAD_PRESETS[1:]:
+        raise ValueError('Pilih pola otomatis yang tersedia.')
+    if preset == 'Flat':
+        values = np.full(len(h), 100.)
+    else:
+        # Malam/dini hari rendah, naik pada siang hari, puncak malam.
+        daily = np.array([.20, .13, .06, 0., .04, .15, .30, .45,
+                          .55, .60, .65, .70, .68, .63, .60, .62,
+                          .72, .85, .95, 1., .90, .72, .50, .32])
+        sampled = daily[h.astype(int)]
+        amplitude = float(np.ptp(sampled))
+        unit = (sampled-sampled.min())/amplitude if amplitude > 0 else np.ones(len(h))
+        minimum = 40. if preset == LOAD_PRESETS[2] else 70.
+        values = np.round(minimum+(100.-minimum)*unit, 2)
+    return pd.DataFrame({'Jam': hours, LOAD_PERCENT: values})
 
 
 def validate_shape(table, hours):
