@@ -37,6 +37,12 @@ def validate_exogenous(table, technologies, base_year, planning_years):
         total = out.loc[out.Teknologi == row.Teknologi, 'Tambahan eksogen (MW)'].sum()
         existing = float(row.get('Kapasitas tahun dasar (MW)', 0.))
         maximum = float(row['Batas kapasitas (MW)'])
+        potential = float(row.get('Potensi EBT (MW)', 0.))
+        if not np.isfinite(potential) or potential < 0:
+            raise ValueError(f'Potensi EBT {row.Teknologi} harus hingga dan tidak negatif.')
+        if potential > 0 and existing+total > potential+1e-8:
+            raise ValueError(f'Kapasitas tahun dasar + tambahan eksogen {row.Teknologi} ({existing+total:g} MW) '
+                             f'melebihi potensi EBT {potential:g} MW. Periksa data potensi atau jadwal eksogen.')
         if maximum > 0 and existing+total > maximum+1e-8:
             raise ValueError(f'Kapasitas tahun dasar + tambahan eksogen {row.Teknologi} ({existing+total:g} MW) '
                              f'melebihi batas total {maximum:g} MW. Ubah batas kapasitas atau jadwal eksogen.')

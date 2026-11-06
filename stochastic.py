@@ -3,7 +3,8 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import OptimizeResult, linprog
+from scipy.optimize import OptimizeResult
+from solver_backend import linprog
 from scipy.sparse import block_diag, coo_matrix, vstack
 
 from model import InfeasibleModelError, Result, build_problem

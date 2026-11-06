@@ -6,7 +6,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from model import BatteryConfig, add_technology, example_inputs, planning_profile, solve, validate_names
+from model import BatteryConfig, POTENTIAL_COLUMN, add_technology, example_inputs, planning_profile, solve, validate_names
 from stochastic import MAX_SCENARIOS, example_scenarios, resize_scenarios, solve_stochastic, uncertainty_catalog
 from storage_inputs import STORAGE_COLUMNS, add_storage, empty_storage_table, storage_configs
 from scenario_manager import initialize, save_active, switch_active, create_case, delete_active, case_overview
@@ -15,6 +15,8 @@ from year_profiles import LOAD_PERCENT, make_annual_profiles, validate_shape
 from excel_ui import render_excel_inputs
 from technology_management import remove_technology
 from exogenous import empty_exogenous, validate_exogenous
+from solver_backend import solver_session
+from solver_ui import current_solver_settings, render_solver_controls
 
 STORAGE_MODEL_LABEL = 'Blok integer + penyimpanan (MILP)'
 
@@ -63,6 +65,7 @@ with st.sidebar:
     integer = model_label != 'Kontinu (LP)'
     use_battery = model_label == STORAGE_MODEL_LABEL
     st.caption('Kontinu: penambahan kapasitas bebas. Integer: penambahan kelipatan ukuran blok; dispatch tetap kontinu.')
+    solver_name, solver_license_mode = render_solver_controls()
     carbon = st.number_input('Harga karbon (USD/tCO2)', min_value=0., value=0., step=10., key='carbon_input')
     discount_rate = st.number_input('Tingkat diskonto (%)', min_value=0., max_value=100., value=8., step=1., key='discount_input')/100
     use_limit = st.checkbox('Batasi emisi tahunan', key='emissions_enabled')
@@ -83,6 +86,9 @@ if 'technology_inputs_v2' not in st.session_state:
     st.session_state['input_revision_v2'] = 0
 if 'Kapasitas tahun dasar (MW)' not in st.session_state['technology_inputs_v2']:
     st.session_state['technology_inputs_v2']['Kapasitas tahun dasar (MW)'] = 0.
+    st.session_state['input_revision_v2'] += 1
+if POTENTIAL_COLUMN not in st.session_state['technology_inputs_v2']:
+    st.session_state['technology_inputs_v2'][POTENTIAL_COLUMN] = 0.
     st.session_state['input_revision_v2'] += 1
 if 'Daya tahun dasar (MW)' not in st.session_state['storage_inputs']:
     st.session_state['storage_inputs']['Daya tahun dasar (MW)'] = 0.
@@ -153,11 +159,16 @@ with theory:
     st.latex(r'0\le p_{i,t}\le a_{i,t}K_i,\qquad K_i\le K_i^{max}\ \text{hanya jika }K_i^{max}>0')
     st.write('Batas kapasitas pembangkit 0 berarti tanpa batas kapasitas. Nilai positif membatasi total kapasitas lama + baru. '
              'Ketersediaan per jam, keseimbangan daya, dan batas emisi tetap berlaku.')
+    st.latex(r'K_{i,y}^0+K_{i,y}^{exo}+K_{i,y}^{endo}\le R_i\quad\text{jika potensi EBT }R_i>0')
+    st.write('Potensi EBT (MW) adalah batas sumber daya per teknologi pada total kapasitas, bukan batas energi MWh/tahun. '
+             'Nilai 0 berarti tanpa batas potensi. Jika batas kapasitas umum dan potensi sama-sama positif, '
+             'keduanya berlaku; batas yang lebih kecil membatasi kapasitas. Isi potensi hanya pada teknologi EBT yang relevan. '
+             'Ketersediaan tetap mengatur produksi per jam. Potensi tetap sama untuk seluruh tahun dan skenario stokastik.')
     if integer:
         st.latex(r'X_i=B_i N_i,\quad N_i\in\mathbb{Z}_{\ge 0},\quad N_i\le\lfloor (K_i^{max}-K_i^0)/B_i\rfloor\ \text{jika }K_i^{max}>0')
         st.write('Bᵢ adalah ukuran blok (MW), Nᵢ jumlah blok yang dibangun. Contoh: blok 50 MW '
                  'memungkinkan penambahan 0, 50, 100, 150 MW. Kapasitas lama 35 MW dan batas total 120 MW hanya mengizinkan 1 blok baru. '
-                 'Jumlah blok dioptimasi langsung oleh HiGHS, bukan pembulatan hasil LP.')
+                 'Jumlah blok dioptimasi langsung oleh solver terpilih, bukan pembulatan hasil LP.')
         if multiyear:
             st.latex(r'K_{i,y}=K_i^0+B_i\sum_{v=1}^{y}N_{i,v},\quad N_{i,v}\in\mathbb{Z}_{\ge0}')
     else:
@@ -242,6 +253,7 @@ with inputs:
                 new_variable = f1.number_input('Biaya variabel teknologi baru (USD/MWh)', min_value=0., value=10.)
                 new_emissions = f2.number_input('Emisi teknologi baru (tCO2/MWh)', min_value=0., value=0.)
                 new_maximum = f1.number_input('Batas kapasitas teknologi baru (MW)', min_value=0., value=0., help='0 = tanpa batas; nilai positif = batas total kapasitas lama + baru.')
+                new_potential = f2.number_input('Potensi EBT teknologi baru (MW)', min_value=0., value=0., help='Batas total kapasitas EBT; 0 = tanpa batas potensi.')
                 new_existing = f2.number_input('Kapasitas tahun dasar teknologi baru (MW)', min_value=0., value=0.)
                 new_lifetime = f2.number_input('Umur aset teknologi baru (tahun)', min_value=1., value=25.)
                 new_block = f1.number_input('Ukuran blok teknologi baru (MW)', min_value=.01, value=10.)
@@ -256,7 +268,7 @@ with inputs:
                     validate_names(st.session_state['technology_inputs_v2'].Teknologi.tolist()
                                    +st.session_state['storage_inputs'].Teknologi.tolist()+[new_name.strip()])
                     added, added_profiles = add_technology(st.session_state['technology_inputs_v2'], st.session_state['profile_inputs_v2'],
-                        new_name, new_investment, new_om, new_variable, new_emissions, new_maximum, new_lifetime, new_block, template, new_existing)
+                        new_name, new_investment, new_om, new_variable, new_emissions, new_maximum, new_lifetime, new_block, template, new_existing, new_potential)
                 except ValueError as exc:
                     st.error(str(exc))
                 else:
@@ -304,15 +316,19 @@ with inputs:
     configs['Umur aset (tahun)'] = st.column_config.NumberColumn(min_value=1.)
     configs['Ukuran blok (MW)'] = st.column_config.NumberColumn(min_value=.01)
     configs['Batas kapasitas (MW)'] = st.column_config.NumberColumn(min_value=0., help='0 = tanpa batas kapasitas. Nilai positif = batas total kapasitas tahun dasar + kapasitas baru.')
+    configs[POTENTIAL_COLUMN] = st.column_config.NumberColumn(min_value=0., help='Potensi sumber daya EBT dalam MW. Membatasi kapasitas dasar + eksogen + endogen. 0 = tanpa batas potensi.')
     technology = st.data_editor(tech, hide_index=True, disabled=['Teknologi'],
         key=f"technology_v2_{st.session_state['input_revision_v2']}", column_config=configs,
-        column_order=['Teknologi', 'Kapasitas tahun dasar (MW)', 'Investasi (USD/kW)', 'Umur aset (tahun)', 'O&M tetap (USD/kW/tahun)',
+        column_order=['Teknologi', 'Kapasitas tahun dasar (MW)', POTENTIAL_COLUMN, 'Investasi (USD/kW)', 'Umur aset (tahun)', 'O&M tetap (USD/kW/tahun)',
                       'Biaya variabel (USD/MWh)', 'Emisi (tCO2/MWh)', 'Batas kapasitas (MW)', 'Ukuran blok (MW)'])
     st.session_state['technology_inputs_v2'] = technology.copy()
     block_sizes = dict(zip(technology.Teknologi, technology['Ukuran blok (MW)'])) if integer else None
     st.caption('Batas kapasitas (MW): 0 = TANPA BATAS (default). Nilai positif adalah batas TOTAL: kapasitas tahun dasar + kapasitas baru. '
                'Kapasitas tahun dasar tidak harus kelipatan blok; hanya penambahan baru yang mengikuti ukuran blok. '
                'Investasi hanya untuk kapasitas baru; O&M tetap untuk seluruh kapasitas. Nilai awal tahun dasar = 0 MW.')
+    st.caption('Potensi EBT (MW): isi batas sumber daya untuk teknologi terbarukan, misalnya PLTS, PLTB, PLTA, atau PLTP. '
+               'Nilai positif membatasi kapasitas total pada setiap tahun; 0 = tanpa batas potensi. '
+               'Batas kapasitas umum tetap berlaku bersamaan. Jangan memperbesar potensi hanya untuk menghilangkan infeasibilitas; gunakan data sumber daya.')
     with st.expander('Penambahan kapasitas eksogen pembangkit'):
         st.caption('Tambahkan proyek yang sudah ditetapkan. Kapasitas tersedia mulai tahun operasi dan tetap tersedia '
                    'pada tahun berikutnya. Tabel kosong berarti tidak ada proyek eksogen. Beberapa baris teknologi/tahun '
@@ -522,6 +538,7 @@ with inputs:
                                       for label in selected_parameters], columns=['Parameter', 'Nilai dasar', 'Cara pengisian']), hide_index=True)
     # Hasil hanya berlaku untuk input yang dihitung, bukan input yang baru diedit.
     signature = json.dumps({
+        'solver': solver_name, 'solver_license_mode': solver_license_mode,
         'planning_semantics': 'joint_multiyear_annualized_npv_v1',
         'capacity_limit_semantics': 'zero_is_unlimited',
         'scenario': scenario, 'model': model_label, 'carbon': carbon, 'limit': limit, 'discount_rate': discount_rate,
@@ -552,19 +569,21 @@ with inputs:
                                capacity_model='integer' if integer else 'continuous',
                                block_sizes=block_sizes, battery=battery, discount_rate=discount_rate,
                                storages=storage_configs(extra_storage_table))
-                if multiyear or not validated_exogenous.empty:
-                    horizon = dict(base_year=base_year, planning_years=planning_years, annual_growth=growth_percent/100., annual_profiles=annual_profiles,
-                                   exogenous_additions=validated_exogenous)
-                    computed = solve_stochastic(technology, profile, scenario_table, uncertainty_parameters=selected_parameters,
-                        problem_builder=build_multiyear_problem, **horizon, **options) if stochastic else solve_multiyear(technology, profile, **horizon, **options)
-                else:
-                    projected_profile = annual_profiles[target_year]
-                    computed = solve_stochastic(technology, projected_profile, scenario_table, uncertainty_parameters=selected_parameters,
-                                                 **options) if stochastic else solve(technology, projected_profile, **options)
+                with solver_session(current_solver_settings()):
+                    if multiyear or not validated_exogenous.empty:
+                        horizon = dict(base_year=base_year, planning_years=planning_years, annual_growth=growth_percent/100., annual_profiles=annual_profiles,
+                                       exogenous_additions=validated_exogenous)
+                        computed = solve_stochastic(technology, profile, scenario_table, uncertainty_parameters=selected_parameters,
+                            problem_builder=build_multiyear_problem, **horizon, **options) if stochastic else solve_multiyear(technology, profile, **horizon, **options)
+                    else:
+                        projected_profile = annual_profiles[target_year]
+                        computed = solve_stochastic(technology, projected_profile, scenario_table, uncertainty_parameters=selected_parameters,
+                                                     **options) if stochastic else solve(technology, projected_profile, **options)
                 st.session_state['optimization'] = {'signature': signature, 'result': computed,
                     'planning': {'Tahun dasar': base_year, 'Periode perencanaan (tahun)': planning_years,
                                  'Tahun akhir': target_year, 'Pertumbuhan beban tahunan (%)': growth_percent,
                                  'Metode proyeksi beban': projection_mode,
+                                 'Solver': solver_name, 'Mode lisensi Gurobi': solver_license_mode if solver_name == 'Gurobi' else '—',
                                  'Pola beban tahun berikutnya': load_shape_mode,
                                  'Availability tahun berikutnya': availability_mode}}
             except (ValueError, RuntimeError) as exc:
@@ -656,7 +675,7 @@ with inputs:
             display_year = st.selectbox('Tahun untuk rincian hasil dan dispatch', list(plan_result.year_results), index=len(plan_result.year_results)-1)
             result = plan_result.year_results[display_year]
         st.subheader(f'Rincian tahun {display_year}')
-        st.caption(f'Model: {model_label} · Solver: HiGHS · Tahun dasar {base_year} · Periode {planning_years} tahun')
+        st.caption(f'Model: {model_label} · Solver: {solver_name} · Tahun dasar {base_year} · Periode {planning_years} tahun')
         st.info(f'Kapasitas, operasi, biaya tahunan, dan emisi berikut adalah untuk tahun {display_year}. '
                 'Kapasitas baru mencakup eksogen + endogen tahun ini. Jumlah blok menunjukkan blok endogen baru; '
                 'kapasitas total mencakup pembangunan sebelumnya.')
@@ -723,7 +742,7 @@ with inputs:
                                name=f'{name} isi', stackgroup='charging')
         fig.add_scatter(x=display_dispatch.Jam, y=display_dispatch['Beban (MW)'], name='Beban',
                        line=dict(color='black', dash='dash'))
-        fig.update_layout(title='Operasi pembangkit: satu hari contoh', xaxis_title='Jam', yaxis_title='MW')
+        fig.update_layout(title='Operasi pembangkit', xaxis_title='Jam', yaxis_title='MW')
         if use_battery:
             fig.add_hline(y=0, line_color='gray', line_width=1)
         right.plotly_chart(fig, width='stretch')
@@ -767,6 +786,7 @@ with inputs:
                     comparison_investment += plan_result.storage_plan['Investasi awal (USD)'].sum()
             saved = st.session_state.setdefault('saved', [])
             saved.append({'Skenario': scenario, 'Model': model_label,
+                          'Solver': solver_name, 'Mode lisensi Gurobi': solver_license_mode if solver_name == 'Gurobi' else '—',
                           'Tahun dasar': base_year, 'Periode perencanaan (tahun)': planning_years,
                           'Tahun akhir': target_year, 'Pertumbuhan beban tahunan (%)': growth_percent,
                           'Pendekatan': 'Stokastik dua tahap' if stochastic else 'Deterministik',

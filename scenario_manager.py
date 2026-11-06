@@ -12,6 +12,7 @@ CONTROL_KEYS = {
     'bat_om_energy_v2', 'bat_variable',
     'load_projection_mode',
     'base_peak_mw', 'load_shape_mode', 'availability_mode',
+    'solver_choice', 'gurobi_license_mode', 'gurobi_credential_source',
 }
 DATA_KEYS = {
     'technology_inputs_v2', 'profile_inputs_v2',
@@ -115,6 +116,7 @@ def case_overview(state):
         status = 'Selesai' if result is not None else ('Gagal / tidak layak' if current else
                  ('Input berubah' if calculation else 'Belum dihitung'))
         row = {'Skenario': case['name'], 'Disalin dari': case['source'] or '—', 'Status': status,
+               'Solver': snapshot.get('solver_choice', 'HiGHS'),
                'Tahun akhir': snapshot.get('base_year', 2025)+snapshot.get('planning_years', 1),
                'Model': snapshot.get('capacity_model_choice', 'Kontinu (LP)')}
         if result is not None:

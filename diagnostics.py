@@ -3,7 +3,7 @@ import math
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import linprog
+from solver_backend import linprog
 
 
 def diagnose(a_eq, b_eq, a_ub, b_ub, bounds, integrality, context):
@@ -12,6 +12,7 @@ def diagnose(a_eq, b_eq, a_ub, b_ub, bounds, integrality, context):
     demand, available = context['demand'], context['available']
     maximum = context['maximum']
     existing = context.get('existing', np.zeros(n))
+    potential = context.get('potential', np.zeros(n))
     storage_specs = context.get('storage_specs', [])
     size = a_eq.shape[1]
     integer = bool(np.any(integrality))
@@ -27,22 +28,32 @@ def diagnose(a_eq, b_eq, a_ub, b_ub, bounds, integrality, context):
                        method='highs', options={'time_limit': 5., 'mip_rel_gap': 0.} if integer else {'time_limit': 5.})
 
     effective = existing+np.array([b[1] if b[1] is not None else np.inf for b in bounds[:n]])*scale
+    potential_limit = np.where(potential > 0, potential, np.inf)
+    if context['integer']:
+        potential_limit = existing+np.floor((potential_limit-existing)/scale)*scale
+    effective = np.minimum(effective, potential_limit)
+    combined = np.minimum(np.where(maximum > 0, maximum, np.inf), np.where(potential > 0, potential, np.inf))
     # Teknologi tanpa batas dan ketersediaan nol tetap memasok nol, bukan NaN.
     contributions = np.zeros_like(available, dtype=float)
     np.multiply(available, effective[:, None], out=contributions, where=available > 0)
     gen_power = contributions.sum(axis=0)
     unused = np.zeros(n)
-    np.subtract(maximum, effective, out=unused, where=maximum > 0)
+    np.subtract(combined, effective, out=unused, where=np.isfinite(combined))
     bat_power = sum(spec['config'].existing_power_mw+bounds[spec['nb']][1]*spec['config'].block_mw for spec in storage_specs)
     shortage_bound = np.maximum(0., demand-gen_power-bat_power)
     report['capacity'] = pd.DataFrame({'Teknologi': names, 'Batas input (MW)': maximum,
                                        'Batas efektif (MW)': effective,
-                                       'Tanpa batas kapasitas': maximum == 0,
+                                       'Potensi EBT (MW; 0 = tanpa batas)': potential,
+                                       'Batas gabungan (MW)': combined,
+                                       'Tanpa batas kapasitas': ~np.isfinite(combined),
                                        'Tidak terpakai karena blok (MW)': unused})
     if np.any(maximum == 0):
         notes.append('Batas kapasitas pembangkit bernilai 0 berarti tanpa batas pembangunan. '
                      'Nilai inf pada batas pasokan menunjukkan tidak ada batas kapasitas; '
                      'profil ketersediaan dan batas emisi tetap berlaku.')
+    if np.any(potential > 0):
+        notes.append('Potensi EBT membatasi TOTAL kapasitas tahun dasar + eksogen + endogen. '
+                     'Batas kapasitas umum dan potensi EBT berlaku bersamaan; nol pada salah satunya tidak menonaktifkan batas positif lainnya.')
     if np.any(shortage_bound > 1e-6):
         h = int(np.argmax(shortage_bound))
         notes.append(f"Batas pasokan pasti kurang pada jam {context['hours'][h]}: beban {demand[h]:.2f} MW, "
@@ -132,12 +143,26 @@ def diagnose(a_eq, b_eq, a_ub, b_ub, bounds, integrality, context):
                     continue
                 ub, limits = a_ub.copy(), list(bounds)
                 ub[:, i] *= proposed/scale[i]
-                limits[i] = (0., float(np.floor((maximum[i]-existing[i])/proposed)))
+                limits[i] = (0., float(np.floor((maximum[i]-existing[i])/proposed)) if maximum[i] > 0 else None)
                 if run(ub=ub, limits=limits).success:
                     suggestions.append({'Parameter': f'Ukuran blok (MW) · {name}', 'Saat ini': float(scale[i]),
                                         'Contoh nilai layak': proposed,
                                         'Keterangan': 'Ukuran blok lebih kecil yang teruji layak dengan batas kapasitas tetap.'})
                     break
+
+    for i, row_index in context.get('potential_rows', {}).items():
+        positive = available[i] > 1e-6
+        if not positive.any():
+            continue
+        required = float(np.max(demand[positive]/available[i, positive]))
+        proposed = existing[i]+math.ceil(max(0., required-existing[i])/scale[i])*scale[i] if context['integer'] else max(existing[i], required)
+        if proposed <= potential[i]+1e-6:
+            continue
+        rhs = b_ub.copy()
+        rhs[row_index] = proposed-existing[i]
+        if run(rhs=rhs).success:
+            suggestions.append({'Parameter': f'Potensi EBT (MW) · {names[i]}', 'Saat ini': float(potential[i]),
+                'Contoh nilai layak': proposed, 'Keterangan': 'Contoh teruji dengan batas kapasitas lain tetap. Ubah potensi hanya bila didukung data sumber daya; bukan rekomendasi untuk memperbesar potensi fisik.'})
 
     for spec in storage_specs:
         battery, name, start = spec['config'], spec['name'], spec['ub_start']

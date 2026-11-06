@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from openpyxl import load_workbook
 
-from model import BatteryConfig, build_problem, example_inputs, validate_names
+from model import BatteryConfig, POTENTIAL_COLUMN, build_problem, example_inputs, validate_names
 from storage_inputs import STORAGE_COLUMNS, empty_storage_table, storage_configs
 from stochastic import MAX_SCENARIOS, uncertainty_catalog
 from year_profiles import LOAD_PERCENT, make_annual_profiles, validate_shape
@@ -39,6 +39,9 @@ SETTINGS = [
     ('Metode proyeksi beban', 'load_projection_mode', PROJECTIONS[0], PROJECTIONS, None, None, 'Pertumbuhan tahunan atau Manual per tahun.'),
     ('Pola beban tahun berikutnya', 'load_shape_mode', INHERIT[0], INHERIT, None, None, 'Edit per tahun memakai baris tahun khusus di Profil Beban.'),
     ('Availability tahun berikutnya', 'availability_mode', INHERIT[0], INHERIT, None, None, 'Edit per tahun memakai baris tahun khusus di Availability.'),
+    ('Solver optimisasi', 'solver_choice', 'HiGHS', ['HiGHS', 'Gurobi'], None, None, 'Gurobi memerlukan lisensi yang tersedia pada komputer/server.'),
+    ('Lisensi Gurobi', 'gurobi_license_mode', 'Komputer/server (lisensi terpasang)',
+     ['Komputer/server (lisensi terpasang)', 'Cloud (WLS)'], None, None, 'Kredensial WLS diatur pada aplikasi atau server, bukan di Excel.'),
 ]
 
 
@@ -99,8 +102,11 @@ def validate_excel_frames(frames):
         fail('Pengaturan', rows[bad][0], 'Parameter', f'Parameter tidak dikenal: {bad}.')
     for label, key, default, kind, minimum, maximum, _ in SETTINGS:
         if label not in rows:
-            fail('Pengaturan', 1, label, 'Parameter wajib belum diisi.')
-        row, value = rows[label]
+            if label not in ('Solver optimisasi', 'Lisensi Gurobi'):
+                fail('Pengaturan', 1, label, 'Parameter wajib belum diisi.')
+            row, value = 0, default
+        else:
+            row, value = rows[label]
         if kind in (int, float):
             value = number(value, 'Pengaturan', row, 'Nilai', minimum, maximum, kind is int)
         elif kind is bool:
@@ -119,6 +125,9 @@ def validate_excel_frames(frames):
     base = controls['base_year']
     years = list(range(base+1, base+controls['planning_years']+1))
     tech_columns = example_inputs()[0].columns.tolist()
+    if 'Pembangkit' in frames and POTENTIAL_COLUMN not in frames['Pembangkit']:
+        frames = dict(frames)
+        frames['Pembangkit'] = frames['Pembangkit'].assign(**{POTENTIAL_COLUMN: 0.})
     tech = require(frames, 'Pembangkit', tech_columns)
     tech['Teknologi'] = tech.Teknologi.map(lambda v: str(v).strip() if pd.notna(v) else '')
     try:
@@ -131,6 +140,8 @@ def validate_excel_frames(frames):
             tech.at[i, column] = number(row[column], 'Pembangkit', i+2, column, minimum)
         if tech.at[i, 'Batas kapasitas (MW)'] > 0 and tech.at[i, 'Kapasitas tahun dasar (MW)'] > tech.at[i, 'Batas kapasitas (MW)']:
             fail('Pembangkit', i+2, 'Batas kapasitas (MW)', 'Batas positif tidak boleh di bawah kapasitas tahun dasar; 0 berarti tanpa batas.')
+        if tech.at[i, POTENTIAL_COLUMN] > 0 and tech.at[i, 'Kapasitas tahun dasar (MW)'] > tech.at[i, POTENTIAL_COLUMN]:
+            fail('Pembangkit', i+2, POTENTIAL_COLUMN, 'Potensi positif tidak boleh di bawah kapasitas tahun dasar.')
     names = tech.Teknologi.tolist()
     exogenous = require(frames, 'Kapasitas Eksogen', EXOGENOUS_COLUMNS, allow_empty=True) if 'Kapasitas Eksogen' in frames else empty_exogenous()
     for i, row in exogenous.iterrows():
@@ -273,6 +284,7 @@ def validate_excel_frames(frames):
     summary = pd.DataFrame([
         {'Input': 'Tahun dasar / akhir', 'Isi': f'{base} / {years[-1]}'},
         {'Input': 'Model kapasitas', 'Isi': controls['capacity_model_choice']},
+        {'Input': 'Solver', 'Isi': controls['solver_choice']},
         {'Input': 'Teknologi pembangkit', 'Isi': str(len(tech))},
         {'Input': 'Tambahan kapasitas eksogen (MW)', 'Isi': str(exogenous['Tambahan eksogen (MW)'].sum())},
         {'Input': 'Jenis penyimpanan dalam file', 'Isi': str(len(storage))},
@@ -308,6 +320,8 @@ def default_template_frames():
         ('Rumus Excel', 'Angka langsung disarankan. Jika memakai rumus, hitung dan simpan dengan Excel terlebih dahulu agar nilai hasil rumus tersedia saat dibaca.'),
         ('Impor', 'Hanya input skenario aktif diganti setelah validasi. Hasil optimisasi lama skenario aktif dihapus; skenario lain tetap tersimpan.'),
         ('Kapasitas Eksogen', 'Opsional: isi tahun operasi setelah tahun dasar, teknologi, dan tambahan MW. Kapasitas tersedia sejak tahun operasi; biaya mengikuti Pembangkit. Kosong = tanpa proyek.'),
+        ('Solver', 'Pilih HiGHS atau Gurobi di Pengaturan. Mode lisensi Gurobi dapat lokal/server atau Cloud (WLS). Kredensial tidak disimpan dalam workbook.'),
+        ('Potensi EBT', 'Kolom Potensi EBT (MW) di Pembangkit membatasi total kapasitas dasar + eksogen + endogen. 0 = tanpa batas potensi. Batas kapasitas umum tetap berlaku. Gunakan data sumber daya.'),
     ]
     stochastic_rows = []
     for label, prob, load, solar, wind in [('Ringan', .25, .9, 1.1, 1.1), ('Normal', .5, 1., 1., 1.), ('Berat', .25, 1.1, .8, .7)]:

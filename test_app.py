@@ -3,10 +3,96 @@ import unittest
 from unittest.mock import patch
 
 from streamlit.testing.v1 import AppTest
-from model import solve
+from model import example_inputs, solve
 
 
 class AppTests(unittest.TestCase):
+    def test_multiyear_year_selection_and_comparison_uses_final_year(self):
+        app = AppTest.from_file('app.py').run(timeout=30)
+        app.number_input(key='planning_years').set_value(3)
+        app.number_input(key='load_growth').set_value(5.).run(timeout=30)
+        self.click(app, 'Jalankan Optimisasi')
+        self.assertEqual(len(app.exception), 0)
+        plan = app.session_state['optimization']['result']
+        self.assertEqual(list(plan.year_results), [2026, 2027, 2028])
+        next(w for w in app.selectbox if w.label == 'Tahun untuk rincian hasil dan dispatch').set_value(2026).run(timeout=30)
+        self.assertEqual(app.metric[0].value, f'{plan.year_results[2026].annual_cost/1e6:,.2f} juta USD/tahun')
+        self.click(app, 'Simpan hasil untuk perbandingan')
+        self.assertAlmostEqual(app.session_state['saved'][0]['Biaya (juta USD/tahun)'], plan.annual_cost/1e6)
+        self.assertAlmostEqual(app.session_state['saved'][0]['Nilai kini biaya periode (juta USD)'], plan.npv_cost/1e6)
+        self.assertEqual(app.session_state['optimization']['result'].npv_cost, plan.npv_cost)
+
+    def test_multiyear_stochastic_storage_year_details(self):
+        app = AppTest.from_file('app.py').run(timeout=30)
+        app.radio[0].set_value('Blok integer + penyimpanan (MILP)')
+        app.number_input(key='planning_years').set_value(2)
+        app.checkbox(key='stochastic_enabled').check().run(timeout=30)
+        self.click(app, 'Jalankan Optimisasi')
+        self.assertEqual(len(app.exception), 0)
+        plan = app.session_state['optimization']['result']
+        self.assertEqual(len(plan.year_results), 2)
+        self.assertFalse(plan.storage_plan.empty)
+        next(w for w in app.selectbox if w.label == 'Tahun untuk rincian hasil dan dispatch').set_value(2026).run(timeout=30)
+        next(w for w in app.selectbox if w.label == 'Skenario untuk grafik dispatch').set_value('Berat').run(timeout=30)
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(len(app.metric), 6)
+
+    @staticmethod
+    def set_table_load(app, peak):
+        # Fixtures kapasitas terbatas untuk pengujian infeasibilitas dan rerun.
+        revision = app.session_state['input_revision_v2']
+        app.session_state[f'technology_v2_{revision}'] = {'edited_rows': {
+            i: {'Batas kapasitas (MW)': 300.} for i in range(len(app.session_state['technology_inputs_v2']))},
+            'added_rows': [], 'deleted_rows': []}
+        app.number_input(key='base_peak_mw').set_value(peak)
+        app.run(timeout=30)
+
+    def test_planning_years_affect_solver_and_preserve_base_load(self):
+        app = AppTest.from_file('app.py').run(timeout=30)
+        app.number_input(key='base_year').set_value(2025)
+        app.number_input(key='planning_years').set_value(5)
+        app.number_input(key='load_growth').set_value(5.).run(timeout=30)
+        self.click(app, 'Jalankan Optimisasi')
+        self.assertEqual(len(app.exception), 0)
+        result = app.session_state['optimization']['result']
+        self.assertAlmostEqual(result.dispatch['Beban (MW)'].max(), 100.*1.05**5)
+        self.assertEqual(app.session_state['profile_inputs_v2']['Beban (MW)'].max(), 100.)
+        self.assertEqual(app.session_state['optimization']['planning']['Tahun akhir'], 2030)
+        self.click(app, 'Simpan hasil untuk perbandingan')
+        self.assertEqual(app.session_state['saved'][0]['Tahun akhir'], 2030)
+        self.click(app, 'Jalankan Optimisasi')
+        self.assertAlmostEqual(app.session_state['optimization']['result'].annual_energy, result.annual_energy)
+        app.number_input(key='base_year').set_value(2026).run(timeout=30)
+        self.assertEqual(len(app.metric), 0)
+        self.assertTrue(any('Input berubah' in w.value for w in app.warning))
+        self.click(app, 'Jalankan Optimisasi')
+        self.assertEqual(app.session_state['optimization']['planning']['Tahun akhir'], 2031)
+        app.number_input(key='planning_years').set_value(10).run(timeout=30)
+        self.assertEqual(len(app.metric), 0)
+
+    def test_stochastic_factors_apply_after_year_projection(self):
+        app = AppTest.from_file('app.py').run(timeout=30)
+        app.number_input(key='planning_years').set_value(2)
+        app.number_input(key='load_growth').set_value(5.)
+        next(w for w in app.checkbox if w.label == 'Aktifkan model stokastik dua tahap').check().run(timeout=30)
+        self.click(app, 'Jalankan Optimisasi')
+        self.assertEqual(len(app.exception), 0)
+        result = app.session_state['optimization']['result']
+        self.assertAlmostEqual(result.scenario_results['Berat'].dispatch['Beban (MW)'].max(), 100.*1.05**2*1.1)
+
+    def test_existing_capacity_editor_and_stale_results(self):
+        app = AppTest.from_file('app.py').run(timeout=30)
+        app.session_state['technology_v2_0'] = {'edited_rows': {0: {'Kapasitas tahun dasar (MW)': 35.}}, 'added_rows': [], 'deleted_rows': []}
+        app.run(timeout=30)
+        self.click(app, 'Jalankan Optimisasi')
+        self.assertEqual(len(app.exception), 0)
+        result = app.session_state['optimization']['result']
+        self.assertEqual(result.summary['Kapasitas tahun dasar (MW)'].iloc[0], 35.)
+        self.assertAlmostEqual(result.summary['Investasi awal (USD)'].iloc[0], result.summary['Kapasitas baru (MW)'].iloc[0]*1800.*1000.)
+        app.session_state['technology_v2_0'] = {'edited_rows': {0: {'Kapasitas tahun dasar (MW)': 45.}}, 'added_rows': [], 'deleted_rows': []}
+        app.run(timeout=30)
+        self.assertEqual(len(app.metric), 0)
+
     @staticmethod
     def click(app, label):
         next(w for w in app.button if w.label == label).click().run(timeout=30)
@@ -25,7 +111,7 @@ class AppTests(unittest.TestCase):
     def test_infeasible_limit_shows_explanation(self):
         app = AppTest.from_file('app.py').run(timeout=30)
         app.checkbox[0].check().run()
-        next(w for w in app.number_input if w.label == 'Puncak beban contoh (MW)').set_value(200.).run()
+        self.set_table_load(app, 200.)
         next(w for w in app.number_input if w.label == 'Batas emisi (tCO2/tahun)').set_value(0.).run()
         self.click(app, 'Jalankan Optimisasi')
         self.assertEqual(len(app.exception), 0)
@@ -73,12 +159,12 @@ class AppTests(unittest.TestCase):
             original_cost = app.session_state['optimization']['result'].annual_cost
             self.click(app, 'Simpan hasil untuk perbandingan')
             self.assertEqual(solver.call_count, 1)
-            next(w for w in app.number_input if w.label == 'Puncak beban contoh (MW)').set_value(200.).run()
+            self.set_table_load(app, 200.)
             self.assertEqual(solver.call_count, 1)
             self.assertEqual(len(app.metric), 0)
             self.assertTrue(any('Input berubah' in w.value for w in app.warning))
             self.assertFalse(any(w.label == 'Simpan hasil untuk perbandingan' for w in app.button))
-            self.assertEqual(len(app.get('download_button')), 0)
+            self.assertEqual(len(app.get('download_button')), 1)  # Template tetap dapat diunduh.
             self.click(app, 'Jalankan Optimisasi')
             self.assertEqual(solver.call_count, 2)
             self.assertEqual(len(app.metric), 3)
@@ -87,7 +173,7 @@ class AppTests(unittest.TestCase):
     def test_failed_rerun_does_not_display_previous_success(self):
         app = AppTest.from_file('app.py').run(timeout=30)
         self.click(app, 'Jalankan Optimisasi')
-        next(w for w in app.number_input if w.label == 'Puncak beban contoh (MW)').set_value(10000.).run()
+        self.set_table_load(app, 10000.)
         self.click(app, 'Jalankan Optimisasi')
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(len(app.metric), 0)
@@ -96,7 +182,7 @@ class AppTests(unittest.TestCase):
     def test_add_technology_preserves_edits_and_solves_all_modes(self):
         app = AppTest.from_file('app.py').run(timeout=30)
         app.session_state['technology_v2_0'] = {'edited_rows': {0: {'Investasi (USD/kW)': 2222.}}, 'added_rows': [], 'deleted_rows': []}
-        app.session_state['profiles_v2_0_100.0'] = {'edited_rows': {0: {'PLTU': .7}}, 'added_rows': [], 'deleted_rows': []}
+        app.session_state['availability_editor_base_0'] = {'edited_rows': {0: {'PLTU': .7}}, 'added_rows': [], 'deleted_rows': []}
         app.run()
         self.click(app, 'Tambah Teknologi')
         next(w for w in app.text_input if w.label == 'Nama teknologi baru').set_value('PLTP')
@@ -164,7 +250,7 @@ class AppTests(unittest.TestCase):
         # Kembalikan probabilitas dan buat skenario pasti tidak layak.
         app.session_state['stochastic_inputs_0'] = {'edited_rows': {0: {'Probabilitas': .25}}, 'added_rows': [], 'deleted_rows': []}
         app.run()
-        next(w for w in app.number_input if w.label == 'Puncak beban contoh (MW)').set_value(10000.).run()
+        self.set_table_load(app, 10000.)
         self.click(app, 'Jalankan Optimisasi')
         self.assertEqual(len(app.exception), 0)
         self.assertTrue(any(w.label == 'Skenario untuk diagnosis' for w in app.selectbox))

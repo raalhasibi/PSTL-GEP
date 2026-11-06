@@ -45,7 +45,7 @@ class InvestmentTests(unittest.TestCase):
 
     def test_new_technology_profile_and_integer_blocks(self):
         tech, profile = example_inputs()
-        tech['Batas kapasitas (MW)'] = 0.
+        profile[tech.Teknologi] = 0.
         added, p = add_technology(tech, profile, '  PLTP  ', 1200., 25., 5., .05, 300., 30., 10., .9)
         self.assertNotIn('PLTP', profile.columns)
         self.assertEqual(len(tech), 4)

@@ -4,10 +4,11 @@ from typing import Callable
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import linprog
+from solver_backend import linprog
 from diagnostics import diagnose
 
 DEFAULT_BLOCK_SIZES = {'PLTU': 50., 'PLTG': 25., 'PLTS': 10., 'PLTB': 10.}
+POTENTIAL_COLUMN = 'Potensi EBT (MW)'
 RESERVED_NAMES = {'Jam', 'Beban', 'Beban (MW)', 'Baterai', 'Baterai isi', 'Baterai keluar',
                   'Isi baterai (MW)', 'Keluar baterai (MW)', 'Energi awal jam (MWh)', 'Energi akhir jam (MWh)',
                   'Skenario', 'Model', 'Ukuran blok (MW)', 'Biaya (juta USD/tahun)', 'Emisi (ribu tCO2/tahun)',
@@ -18,7 +19,7 @@ RESERVED_NAMES = {'Jam', 'Beban', 'Beban (MW)', 'Baterai', 'Baterai isi', 'Bater
                   'Daya tahun dasar (MW)', 'Daya baru (MW)', 'Tahun dasar', 'Tahun akhir',
                   'Periode perencanaan (tahun)', 'Pertumbuhan beban tahunan (%)',
                   'Tahun', 'Tahun hasil', 'Nilai kini biaya periode (juta USD)',
-                  'Kapasitas eksogen (MW)', 'Kapasitas endogen (MW)', 'Eksogen kumulatif (MW)', 'Endogen kumulatif (MW)'}
+                  'Kapasitas eksogen (MW)', 'Kapasitas endogen (MW)', 'Eksogen kumulatif (MW)', 'Endogen kumulatif (MW)', POTENTIAL_COLUMN}
 
 
 def capital_recovery_factor(rate, lifetime):
@@ -66,15 +67,17 @@ def validate_names(names):
 
 
 def add_technology(technologies, profiles, name, investment, fixed_om, variable,
-                   emissions, maximum, lifetime, block_mw, availability, existing_mw=0.):
+                   emissions, maximum, lifetime, block_mw, availability, existing_mw=0., potential_mw=0.):
     """Tambahkan teknologi dan profil secara atomik; input asli tidak diubah."""
     name = name.strip()
     validate_names(technologies['Teknologi'].tolist()+[name])
-    values = np.array([investment, fixed_om, variable, emissions, maximum, lifetime, block_mw, existing_mw], dtype=float)
+    values = np.array([investment, fixed_om, variable, emissions, maximum, lifetime, block_mw, existing_mw, potential_mw], dtype=float)
     if not np.isfinite(values).all() or (values < 0).any() or lifetime <= 0 or block_mw <= 0:
         raise ValueError('Biaya, emisi, dan batas kapasitas harus tidak negatif; umur dan ukuran blok harus positif.')
     if maximum > 0 and existing_mw > maximum:
         raise ValueError('Kapasitas tahun dasar tidak boleh melebihi batas kapasitas total.')
+    if potential_mw > 0 and existing_mw > potential_mw:
+        raise ValueError('Kapasitas tahun dasar tidak boleh melebihi potensi EBT.')
     availability = np.broadcast_to(np.asarray(availability, dtype=float), (len(profiles),))
     if not np.isfinite(availability).all() or (availability < 0).any() or (availability > 1).any():
         raise ValueError('Ketersediaan harus berada antara 0 dan 1.')
@@ -82,8 +85,11 @@ def add_technology(technologies, profiles, name, investment, fixed_om, variable,
            'Biaya variabel (USD/MWh)': variable, 'Emisi (tCO2/MWh)': emissions,
            'Batas kapasitas (MW)': maximum, 'Investasi (USD/kW)': investment,
            'Umur aset (tahun)': lifetime, 'Ukuran blok (MW)': block_mw,
-           'Kapasitas tahun dasar (MW)': existing_mw}
-    updated = pd.concat([technologies, pd.DataFrame([row])], ignore_index=True)
+           'Kapasitas tahun dasar (MW)': existing_mw, POTENTIAL_COLUMN: potential_mw}
+    original = technologies.copy()
+    if POTENTIAL_COLUMN not in original:
+        original[POTENTIAL_COLUMN] = 0.
+    updated = pd.concat([original, pd.DataFrame([row])], ignore_index=True)
     updated_profiles = profiles.copy()
     updated_profiles[name] = availability
     return updated, updated_profiles
@@ -112,6 +118,7 @@ def example_inputs(peak_mw=100.0):
         'Umur aset (tahun)': [30., 25., 25., 25.],
         'Ukuran blok (MW)': [50., 25., 10., 10.],
         'Kapasitas tahun dasar (MW)': [0., 0., 0., 0.],
+        POTENTIAL_COLUMN: [0., 0., 0., 0.],
     })
     profiles = pd.DataFrame({'Jam': np.arange(24), 'Beban (MW)': demand,
                              'PLTU': np.ones(24), 'PLTG': np.ones(24),
@@ -215,6 +222,12 @@ def build_problem(technologies, profiles, carbon_price=0., emissions_limit=None,
     existing = technologies.get('Kapasitas tahun dasar (MW)', pd.Series(0., index=technologies.index)).to_numpy(dtype=float)
     if not np.isfinite(existing).all() or (existing < 0).any() or ((maximum > 0) & (existing > maximum)).any():
         raise ValueError('Kapasitas tahun dasar harus tidak negatif, hingga, dan tidak melebihi batas kapasitas total.')
+    potential = technologies.get(POTENTIAL_COLUMN, pd.Series(0., index=technologies.index)).to_numpy(dtype=float)
+    if not np.isfinite(potential).all() or (potential < 0).any():
+        raise ValueError('Potensi EBT harus berupa angka hingga dan tidak negatif; 0 berarti tanpa batas potensi.')
+    if ((potential > 0) & (existing > potential)).any():
+        name = names[int(np.flatnonzero((potential > 0) & (existing > potential))[0])]
+        raise ValueError(f'Kapasitas tetap {name} (tahun dasar dan eksogen yang sudah beroperasi) melebihi potensi EBT.')
     constant_cost = float(existing @ fixed_om * 1000)
     crf = capital_recovery_factor(discount_rate, lifetime)
     if (default_blocks <= 0).any():
@@ -278,6 +291,14 @@ def build_problem(technologies, profiles, carbon_price=0., emissions_limit=None,
             a_ub[i*t+h, i] = -availability[i, h]*scale[i]
             a_ub[i*t+h, j] = 1
     b_ub = (availability*existing[:, None]).ravel()
+    potential_rows = {}
+    for i in range(n):
+        if potential[i] > 0:
+            row = np.zeros(len(c))
+            row[i] = scale[i]
+            potential_rows[i] = len(b_ub)
+            a_ub = np.vstack([a_ub, row])
+            b_ub = np.r_[b_ub, potential[i]-existing[i]]
     remaining = np.where(maximum > 0, maximum-existing, np.inf)
     capacity_upper = np.floor(remaining/scale) if integer else remaining
     bounds = [(0, float(m) if np.isfinite(m) else None) for m in capacity_upper] + [(0, None)]*(n*t)
@@ -362,6 +383,8 @@ def build_problem(technologies, profiles, carbon_price=0., emissions_limit=None,
                                maximum=maximum, existing=existing, battery=None, hours=profiles['Jam'].to_numpy(), days=days,
                                emissions=emissions, emissions_limit=emissions_limit, integer=integer)
                 context['storage_specs'] = storage_specs
+                context['potential'] = potential
+                context['potential_rows'] = potential_rows
                 diagnosis = diagnose(a_eq, demand_rhs, a_ub, b_ub, bounds, integrality, context)
                 raise InfeasibleModelError('Tidak ada solusi layak. Periksa batas kapasitas, ketersediaan per jam, '
                                  'dan batas emisi. Pada model integer, periksa juga ukuran blok. '
@@ -383,6 +406,7 @@ def build_problem(technologies, profiles, carbon_price=0., emissions_limit=None,
         summary['Investasi tahunan (USD/tahun)'] = added*1000*investment*crf
         summary['O&M tetap (USD/tahun)'] = capacity*1000*fixed_om
         summary['CRF (1/tahun)'] = crf
+        summary[POTENTIAL_COLUMN] = potential
         if integer:
             summary['Ukuran blok (MW)'] = scale
             summary['Jumlah blok'] = np.rint(solution.x[:n]).astype(int)

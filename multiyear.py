@@ -3,7 +3,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import OptimizeResult, linprog
+from scipy.optimize import OptimizeResult
+from solver_backend import linprog
 from scipy.sparse import block_diag, coo_matrix, vstack
 
 from model import InfeasibleModelError, OptimizationProblem, Result, build_problem, planning_profile, capital_recovery_factor
@@ -89,11 +90,12 @@ def build_multiyear_problem(technologies, profiles, base_year=2025, planning_yea
                 if not exogenous.empty:
                     capacity_rows = [{'Tahun': year, 'Teknologi': name, 'Kapasitas tahun dasar (MW)': base_capacity[i],
                         'Eksogen kumulatif (MW)': exo_cumulative[y, i],
+                        'Potensi EBT (MW; 0 = tanpa batas)': float(technologies.iloc[i].get('Potensi EBT (MW)', 0.)),
                         'Batas total (MW; 0 = tanpa batas)': float(technologies.iloc[i]['Batas kapasitas (MW)'])}
                         for y, year in enumerate(years) for i, name in enumerate(names)]
                     diagnosis = {'findings': ['Setiap tahun layak bila diperiksa sendiri, tetapi jadwal pembangunan bersama tidak layak. '
                         'Kapasitas endogen yang dibutuhkan lebih awal harus tetap tersedia ketika proyek eksogen beroperasi. '
-                        'Periksa batas total kapasitas dan jadwal proyek eksogen; kelayakan per tahun secara terpisah belum menjamin kelayakan seluruh periode.'],
+                        'Periksa batas total kapasitas, potensi EBT, dan jadwal proyek eksogen; kelayakan per tahun secara terpisah belum menjamin kelayakan seluruh periode.'],
                         'suggestions': [], 'capacity': pd.DataFrame(capacity_rows),
                         'hourly': pd.concat([pd.DataFrame({'Tahun': year, 'Jam': profiles.Jam,
                             'Beban (MW)': problems[y].b_eq[:len(profiles)]}) for y, year in enumerate(years)], ignore_index=True)}

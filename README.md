@@ -27,6 +27,62 @@ python -m venv .venv
 
 Buka alamat lokal yang ditampilkan Streamlit (biasanya http://localhost:8501).
 
+## Pilihan solver: HiGHS dan Gurobi
+
+Pilih **Solver optimisasi** di sidebar. **HiGHS** adalah default dan berjalan
+melalui SciPy. **Gurobi** menggunakan `gurobipy`, yang terdaftar pada requirements.
+Pilihan berlaku untuk LP, integer/biner, penyimpanan, multi tahun, stokastik,
+serta seluruh pencarian diagnosis. Model matriks yang sama dikirim ke solver
+yang dipilih; jika Gurobi gagal, aplikasi menampilkan kesalahan tanpa berpindah
+diam-diam ke HiGHS. Pilihan solver tersimpan per skenario dan perubahan solver
+mengharuskan optimisasi ulang.
+
+Untuk Gurobi, pilih salah satu **Lisensi Gurobi**:
+
+- **Komputer/server (lisensi terpasang)** memakai konfigurasi lisensi Gurobi
+  pada mesin yang menjalankan Python/GENORA. Gunakan lokasi lisensi standar
+  Gurobi atau atur `GRB_LICENSE_FILE` sebelum menjalankan aplikasi. Contoh PowerShell:
+  `$env:GRB_LICENSE_FILE = 'C:\lisensi\gurobi.lic'`. Lisensi di laptop pengunjung
+  tidak otomatis dapat dipakai oleh aplikasi di Streamlit Cloud.
+- **Cloud (WLS)** memakai Web License Service. Perhitungan tetap berlangsung
+  pada komputer/server GENORA; ini bukan Gurobi Instant Cloud/remote compute.
+  Gunakan WLSACCESSID, WLSSECRET dan LICENSEID dari lisensi WLS yang sesuai.
+
+Pada WLS, pilih **Secrets / environment server** untuk konfigurasi administrator,
+atau **Masukkan untuk sesi ini** untuk input password di sidebar. Contoh konfigurasi
+server tersedia di `.streamlit/secrets.toml.example`. Untuk penggunaan lokal,
+salin dan isi sebagai `.streamlit/secrets.toml`; untuk Community Cloud,
+isi melalui pengaturan **Secrets** aplikasi:
+
+```toml
+[gurobi]
+WLSACCESSID = "ISI_WLSACCESSID_ANDA"
+WLSSECRET = "ISI_WLSSECRET_ANDA"
+LICENSEID = 123456
+```
+
+Alternatif environment server: `GUROBI_WLSACCESSID`, `GUROBI_WLSSECRET`,
+`GUROBI_LICENSEID`. Ketiga nilai harus lengkap dari sumber yang sama.
+Kredensial dibaca saat menjalankan solver atau menekan **Periksa lisensi Gurobi**.
+Tombol pemeriksaan hanya menyelesaikan contoh kecil; tidak membuktikan izin
+penggunaan bersama atau kapasitas lisensi untuk seluruh model.
+
+Kredensial sesi tidak masuk snapshot skenario, signature input, hasil, Excel,
+atau perbandingan. Jangan unggah file `.lic`, `.env`, atau `secrets.toml` ke
+GitHub. Setiap eksekusi menggunakan environment Gurobi terpisah, digunakan ulang
+untuk diagnosis pada eksekusi tersebut dan ditutup ketika selesai/gagal.
+Gagal lisensi atau batas ukuran ditampilkan sebagai kesalahan; solusi yang
+berhenti karena batas waktu belum dinyatakan optimal. Lisensi harus sesuai
+untuk mesin/server, jumlah pengguna, dan jenis kegiatan Anda.
+
+API Python dapat memakai `with solver_session(SolverSettings(name='Gurobi')):`
+dari `solver_backend` di sekitar pemanggilan `solve`/`solve_multiyear`/
+`solve_stochastic`. Tanpa context tersebut solver tetap HiGHS.
+
+Saat deploy, unggah modul **solver_backend.py**, **solver_ui.py**, requirements
+terbaru, dan template Excel terbaru. Contoh Secrets boleh dibagikan dengan
+placeholder; kredensial asli harus diisi melalui Secrets/environment server.
+
 ## Input dari Excel
 
 Buka **Input dari Excel — unduh template dan unggah data** di bagian atas halaman.
@@ -84,7 +140,7 @@ aplikasi dan mahasiswa tidak memerlukan Node.js.
 
 ## Cakupan awal
 
-### Skenario alternatif dari skenario dasar
+### Skenario eksperimen dari skenario dasar
 
 Di sidebar **Kelola skenario**:
 
@@ -270,6 +326,36 @@ unit commitment. Ringkasan integer dan CSV menyertakan ukuran serta jumlah blok.
 Simpan hasil setiap mode untuk membandingkan biaya, kapasitas, dan emisi.
 
 ## Tambah teknologi dan biaya investasi
+
+### Constraint potensi energi terbarukan
+
+Isi kolom **Potensi EBT (MW)** pada tabel pembangkit atau formulir **Tambah
+Teknologi**. Nilai positif membatasi total kapasitas tahun dasar + eksogen +
+endogen untuk teknologi tersebut pada SETIAP tahun. Nilai awal **0** berarti
+tanpa batas potensi. Gunakan pada teknologi EBT yang relevan, seperti PLTS,
+PLTB, PLTA atau PLTP; teknologi tidak diklasifikasikan otomatis berdasarkan nama
+atau faktor emisinya. Parameter ini adalah potensi KAPASITAS dalam MW,
+bukan batas produksi energi tahunan MWh atau GWh.
+
+Contoh: potensi PLTS 100 MW, kapasitas tahun dasar 20 MW, dan eksogen kumulatif
+30 MW menyisakan maksimum tambahan endogen kumulatif 50 MW. Pada model integer,
+penambahan endogen tetap mengikuti ukuran blok. Jika sisa potensi tidak mencapai
+satu blok penuh, bagian tersebut tidak dapat dibangun. Availability per jam
+tetap menentukan keluaran dari kapasitas yang tersedia.
+
+Potensi EBT dan **Batas kapasitas (MW)** adalah dua kendala yang berlaku
+bersamaan. Bila keduanya positif, nilai yang lebih kecil membatasi kapasitas.
+Mengisi nol pada satu kolom tidak menghapus batas positif pada kolom lainnya.
+Kapasitas tahun dasar atau proyek eksogen yang melampaui potensi ditolak dengan
+pesan input. Diagnosis menghitung batas efektif dan menguji contoh perubahan
+satu parameter sambil mempertahankan batas lainnya. Potensi fisik hanya boleh
+diubah berdasarkan data sumber daya, bukan semata-mata untuk membuat model layak.
+
+Berlaku pada LP, integer/baterai, multi tahun dan stokastik, menggunakan solver
+yang dipilih. Potensi tetap sama antar tahun dan skenario. Input otomatis ikut
+salinan skenario dan penghapusan teknologi; hasil/CSV merinci potensi tiap
+teknologi. Template Excel menambahkan kolom ini pada sheet **Pembangkit**.
+Workbook lama tanpa kolom tersebut tetap diterima sebagai potensi 0.
 
 ### Penambahan kapasitas eksogen
 

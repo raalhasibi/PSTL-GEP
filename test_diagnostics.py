@@ -85,7 +85,7 @@ class DiagnosticTests(unittest.TestCase):
 
     def test_unfinished_diagnostic_is_not_reported_as_optimum(self):
         tech, profile = example_inputs()
-        tech['Batas kapasitas (MW)'] = 0.
+        profile[tech.Teknologi] = 0.
         with patch('diagnostics.linprog', return_value=SimpleNamespace(success=False, status=1)):
             report = self.diagnose(tech, profile, emissions_limit=0.)
         self.assertNotIn('minimum_emissions', report)

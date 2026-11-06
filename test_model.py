@@ -11,7 +11,7 @@ class ModelTests(unittest.TestCase):
         p = r.dispatch[tech.Teknologi].to_numpy()
         np.testing.assert_allclose(p.sum(axis=1), profile['Beban (MW)'], atol=1e-7)
         self.assertTrue((p <= profile[tech.Teknologi].to_numpy()*r.summary['Kapasitas (MW)'].to_numpy()+1e-7).all())
-        self.assertAlmostEqual(r.annual_cost, r.summary.iloc[:, 3:6].to_numpy().sum())
+        self.assertAlmostEqual(r.annual_cost, r.summary[['Biaya tetap (USD/tahun)', 'Biaya operasi (USD/tahun)', 'Biaya karbon (USD/tahun)']].to_numpy().sum())
         self.assertAlmostEqual(r.annual_energy, profile['Beban (MW)'].sum()*365)
 
     def test_single_generator_analytical_solution(self):
@@ -32,7 +32,7 @@ class ModelTests(unittest.TestCase):
 
     def test_infeasible_and_invalid(self):
         tech, profile = example_inputs()
-        tech.iloc[:, 4] = 0.
+        profile[tech.Teknologi] = 0.
         with self.assertRaisesRegex(ValueError, 'Tidak ada solusi'):
             solve(tech, profile)
         tech, profile = example_inputs()
@@ -60,6 +60,7 @@ class ModelTests(unittest.TestCase):
 
     def test_integer_balance_emissions_and_lp_lower_bound(self):
         tech, profile = example_inputs()
+        tech['Batas kapasitas (MW)'] = 300.
         lp = solve(tech, profile, carbon_price=50., emissions_limit=150000.)
         r = solve(tech, profile, carbon_price=50., emissions_limit=150000., capacity_model='integer')
         self.assertGreaterEqual(r.annual_cost+1e-5, lp.annual_cost)
